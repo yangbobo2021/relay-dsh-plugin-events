@@ -20,3 +20,10 @@
 
 Packed official-DSH boot/composition and browser checks run in Relay's cross-plugin
 delivery harness.
+
+## Review 3 — independent checkout execution
+
+- Verified a fresh plugin checkout can run `npm test` without relying on a parent
+  workspace installation.
+- Added the same official-DSH peer-link preparation used by typecheck and build to
+  the test lifecycle; this prevents a false local pass caused by hoisted packages.

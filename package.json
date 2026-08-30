@@ -14,6 +14,7 @@
   "publishConfig": { "access": "public" },
   "scripts": {
     "prepare:dsh": "scripts/link-dsh-development-peers.sh",
+    "pretest": "npm run prepare:dsh",
     "prebuild": "npm run prepare:dsh && node -e \"require('node:fs').rmSync('lib',{recursive:true,force:true})\"",
     "build": "tsdown --config tsdown.config.ts",
     "postbuild": "node normalize-build.mjs",
