@@ -36,8 +36,9 @@ test("router registration is exclusive and disposal restores exact fallback", as
       },
     });
     assert.throws(() => service.registerRouter({ id: "test.other", async route() {} }), /already registered/);
-    await service.handleEvent(event("event-semantic", "different.type"));
+    const semantic = await service.handleEvent(event("event-semantic", "different.type"));
     assert.equal(delivered.length, 1);
+    assert.equal(semantic.event.routing_attempts[0].router, "test.semantic");
     release();
     const dismissed = await service.handleEvent(event("event-dismissed", "different.type.2"));
     assert.equal(dismissed.event.decision.disposition, "dismiss");
@@ -128,6 +129,37 @@ function createService(inbox, options = {}) {
     ...options,
   });
 }
+
+test("exact fallback groups several matching non-exclusive waits into one Session delivery", async () => {
+  const accepted = [];
+  const service = createService({ async deliver(input) { accepted.push(input); } });
+  try {
+    const proposal = registration("many", "done");
+    proposal.waits[0].exclusive = false;
+    proposal.waits.push({ ...proposal.waits[0], wait_id: "another-wait" });
+    await service.registerWaits(proposal);
+    const result = await service.handleEvent(event("many-event", "done"));
+    assert.equal(result.event.deliveries.length, 1);
+    assert.equal(result.event.deliveries[0].wait_ids.length, 2);
+    assert.equal(accepted.length, 1);
+  } finally { await service.stop(); }
+});
+
+test("the background recovery loop retries admission without a new external Event", async () => {
+  let calls = 0;
+  let recovered;
+  const done = new Promise(resolve => { recovered = resolve; });
+  const service = createService({ async deliver() {
+    if (++calls === 1) throw new Error("offline");
+    recovered();
+  } }, { dispatchPollIntervalMs: 5 });
+  try {
+    await service.registerWaits(registration("automatic", "done"));
+    await service.handleEvent(event("automatic-event", "done"));
+    await done;
+    assert.equal(calls, 2);
+  } finally { await service.stop(); }
+});
 
 function registration(sessionId, eventType) {
   return {

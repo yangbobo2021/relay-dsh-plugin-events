@@ -13,6 +13,7 @@ if [[ -z "$dsh_root" || ! -f "$dsh_root/package.json" ]]; then
   printf 'Set DSH_ROOT to a prepared official deepseek-harness checkout.\n' >&2
   exit 1
 fi
+dsh_root="$(cd "$dsh_root" && pwd)"
 
 source_root="$dsh_root/node_modules/.pnpm/node_modules/@deepseek-ai"
 target_root="$plugin_root/node_modules/@deepseek-ai"
@@ -42,3 +43,5 @@ ln -s "$dsh_root/vendor/cosmokit" "$dsh_root/vendor/cordis/node_modules/@deepsee
 mkdir -p "$dsh_root/vendor/cordis/node_modules/@standard-schema"
 rm -rf "$dsh_root/vendor/cordis/node_modules/@standard-schema/spec"
 ln -s "$dsh_root/node_modules/.pnpm/node_modules/@standard-schema/spec" "$dsh_root/vendor/cordis/node_modules/@standard-schema/spec"
+
+node "$plugin_root/scripts/dsh-type-paths.mjs" "$dsh_root"

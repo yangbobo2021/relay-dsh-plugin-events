@@ -6,7 +6,7 @@ import { SessionId } from "@deepseek-ai/dsh-session";
 export class DshInboxAdapter {
   constructor({
     resolveAgent,
-    awaitDurable = (agent) => agent.whenIdle(),
+    awaitDurable,
     maxInputChars = 100_000,
     debug = false,
   }) {
@@ -26,10 +26,19 @@ export class DshInboxAdapter {
 
     const input = this.buildInput({ sessionId, activationId, deliveries });
     this.log(`enqueue ${activationId} into ${sessionId}`);
-    resolved.agent.followup(createUserMessage({
+    // Admission is acknowledged at durable inbox persistence, not after the
+    // model has finished a potentially long turn. A retry after failed flush
+    // must find the existing message instead of scheduling a second turn.
+    const alreadyQueued = (resolved.agent.session.events ?? []).some(event => {
+      const messages = event.type === "agent/inbox/spliced" ? event.data.inserted ?? []
+        : event.type === "user/message" ? [event.data] : [];
+      return messages.some(message => message.id === activationId
+        && message.source?.kind === "plugin" && message.source.plugin === "relay");
+    });
+    if (!alreadyQueued) resolved.agent.followup({ ...createUserMessage({
       content: [{ type: "text", text: input }],
       source: { kind: "plugin", plugin: "relay" },
-    }));
+    }), id: activationId });
     await this.awaitDurable(resolved.agent, { sessionId, activationId });
     return { accepted: true, activationId };
   }

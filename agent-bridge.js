@@ -8,7 +8,7 @@ export function installRelayAgentBridge(
   if (typeof registerWaits !== "function") throw new Error("registerWaits callback is required");
   if (typeof cancelWaits !== "function") throw new Error("cancelWaits callback is required");
 
-  ctx.tools.register(defineTool({
+  const unregisterWaits = ctx.tools.register(defineTool({
     name: "relay_register_waits",
     description: "Ask Relay to watch external conditions for this conversation, with optional bound Monitors.",
     parameters: {
@@ -113,7 +113,7 @@ export function installRelayAgentBridge(
     },
   }));
 
-  ctx.tools.register(defineTool({
+  const unregisterCancel = ctx.tools.register(defineTool({
     name: "relay_cancel_waits",
     description: "Cancel every active Relay wait for this conversation.",
     parameters: {},
@@ -124,6 +124,7 @@ export function installRelayAgentBridge(
     },
   }));
 
+  return () => { unregisterCancel?.(); unregisterWaits?.(); };
 }
 
 function acknowledgementSchema(flag) {

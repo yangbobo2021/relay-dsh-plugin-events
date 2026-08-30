@@ -6,7 +6,8 @@ delivery to the owning existing Session, recovery, and a Waiting Events settings
 surface without adding an execution backend.
 
 ```bash
-dsh plugin --profile web add github:yangbobo2021/relay-dsh-plugin-events#main
+# After building this repository (see below):
+dsh plugin --profile web add ./relay-dsh-plugin-events-0.1.0.tgz
 dsh web
 ```
 
@@ -18,7 +19,10 @@ See [SPEC.md](SPEC.md) and
 [delivery scenarios](docs/acceptance-scenarios.md).
 
 Set `DSH_ROOT` to the prepared immutable official DSH checkout, then run
-`npm ci --ignore-scripts && npm run verify`.
+`npm ci --ignore-scripts && npm run verify && npm pack`.
+The tarball includes built runtime files. A raw GitHub checkout intentionally does
+not track `lib/`; do not install `#main` as if it were a built release. This delivery
+does not claim an npm registry publication.
 
 Tested official DSH reference:
 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.

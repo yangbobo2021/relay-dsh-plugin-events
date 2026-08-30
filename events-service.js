@@ -26,9 +26,14 @@ export class RelayEventsService extends Service {
     this.routerProvider = null;
     this.monitorProvider = null;
     this.operations = new OperationGate();
+    const service = this;
     this.runtime = new RelayRuntime({
       store: this.store,
-      router: { route: input => this.router.route(input), get name() { return "relay-router-slot"; } },
+      router: {
+        route: input => service.router.route(input),
+        get name() { return service.router.name ?? service.router.id; },
+        get model() { return service.router.model ?? null; },
+      },
       inbox,
       monitorRegistrar: { prepare: input => this.prepareMonitors(input) },
       workerId: "relay-events-dispatcher",
@@ -40,6 +45,7 @@ export class RelayEventsService extends Service {
   }
 
   registerRouter(provider) {
+    if (this.stopped) throw new Error("Relay Events is shutting down");
     validateRouterProvider(provider);
     if (this.routerProvider) throw new Error(`router provider ${this.routerProvider.id} is already registered`);
     this.routerProvider = provider;
@@ -56,6 +62,7 @@ export class RelayEventsService extends Service {
   }
 
   registerMonitorProvider(provider) {
+    if (this.stopped) throw new Error("Relay Events is shutting down");
     validateMonitorProvider(provider);
     if (this.monitorProvider) throw new Error(`monitor provider ${this.monitorProvider.id} is already registered`);
     this.monitorProvider = provider;
@@ -81,6 +88,7 @@ export class RelayEventsService extends Service {
   beginMonitorCheck(...args) { return this.operations.run(() => this.store.beginMonitorCheck(...args)); }
   completeMonitorCheck(...args) { return this.operations.run(() => this.store.completeMonitorCheck(...args)); }
   failMonitorCheck(...args) { return this.operations.run(() => this.store.failMonitorCheck(...args)); }
+  abandonMonitorCheck(...args) { return this.operations.run(() => this.store.abandonMonitorCheck(...args)); }
   listDueMonitors(...args) { return this.operations.run(() => this.store.listDueMonitors(...args)); }
 
   async prepareMonitors(input) {
@@ -155,15 +163,19 @@ export function createExactEventRouter() {
       }
       const exclusive = matches.find(({ wait }) => wait.exclusive);
       const selected = exclusive ? [exclusive] : matches;
+      const deliveries = new Map();
+      for (const { session, wait } of selected) {
+        const delivery = deliveries.get(session.session_id) ?? {
+          session_id: session.session_id, wait_ids: [],
+          relation: `event type ${eventType} matches the registered wait`, confidence: 1,
+        };
+        delivery.wait_ids.push(wait.wait_id);
+        deliveries.set(session.session_id, delivery);
+      }
       return {
         disposition: "deliver",
         actionable: true,
-        deliveries: selected.map(({ session, wait }) => ({
-          session_id: session.session_id,
-          wait_ids: [wait.wait_id],
-          relation: `event type ${eventType} matches the registered wait`,
-          confidence: 1,
-        })),
+        deliveries: [...deliveries.values()],
         evidence: [`Event type ${eventType} exactly matches ${selected.length} active wait(s).`],
         summary: `Deliver ${eventType} to its waiting session.`,
       };

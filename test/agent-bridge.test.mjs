@@ -6,7 +6,10 @@ import { installRelayAgentBridge } from "../agent-bridge.js";
 test("Agent tools derive Session ownership from the authenticated Agent context", async () => {
   const definitions = new Map();
   const calls = [];
-  installRelayAgentBridge({ tools: { register(definition) { definitions.set(definition.name, definition); } } }, {
+  const dispose = installRelayAgentBridge({ tools: { register(definition) {
+    definitions.set(definition.name, definition);
+    return () => definitions.delete(definition.name);
+  } } }, {
     sessionId: "authenticated-session",
     async registerWaits(input) { calls.push(input); return { waits: input.waits.map(wait => ({ ...wait, status: "active" })) }; },
     async cancelWaits(sessionId) { calls.push({ cancel: sessionId }); },
@@ -25,4 +28,6 @@ test("Agent tools derive Session ownership from the authenticated Agent context"
   assert.equal(calls[0].sessionId, "authenticated-session");
   await definitions.get("relay_cancel_waits").execute({});
   assert.deepEqual(calls[1], { cancel: "authenticated-session" });
+  dispose();
+  assert.equal(definitions.size, 0, "unloading Events removes tools from surviving Agents");
 });

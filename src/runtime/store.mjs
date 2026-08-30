@@ -784,7 +784,9 @@ export class RelayStore {
         );
 
       const eventIds = [];
-      if (proposedEvents.length === 1) {
+      if (proposedEvents.length === 1 && !this.database.prepare(
+        "SELECT event_id FROM monitor_triggers WHERE monitor_id = ? AND trigger_key = ?",
+      ).get(row.id, proposedEvents[0].key)) {
         eventIds.push(this.insertBoundMonitorEvent({
           monitorRow: row,
           checkId: snapshot.check_id,
@@ -794,10 +796,10 @@ export class RelayStore {
         }));
       }
 
-      const nextState = proposedEvents.length === 0
+      const nextState = eventIds.length === 0
         ? "active"
         : row.lifecycle === "one_shot" ? "completed" : "triggered";
-      const nextCheckAt = proposedEvents.length === 0
+      const nextCheckAt = eventIds.length === 0
         ? nextMonitorCheckAt(decodeJson(row.schedule_json), this.clock())
         : null;
       this.database
@@ -818,7 +820,7 @@ export class RelayStore {
         .run(timestamp, snapshot.check_id);
 
       return {
-        status: proposedEvents.length === 0 ? "observed" : "triggered",
+        status: eventIds.length === 0 ? "observed" : "triggered",
         monitor: this.inspectMonitor(row.id),
         eventIds,
         sessionIds: eventIds.length === 0 ? [] : [row.session_id],
@@ -887,6 +889,17 @@ export class RelayStore {
         eventIds,
         sessionIds: eventIds.length === 0 ? [] : [row.session_id],
       };
+    });
+  }
+
+  abandonMonitorCheck(snapshot, owner) {
+    return this.transaction(() => {
+      const row = this.requireMonitorCommit(snapshot, owner);
+      this.database.prepare("UPDATE monitor_checks SET state = 'failed', error_class = 'cancelled', finished_at = ? WHERE id = ?")
+        .run(this.now(), snapshot.check_id);
+      this.database.prepare("UPDATE monitors SET lease_owner = NULL, lease_expires_at = NULL, version = version + 1 WHERE id = ?")
+        .run(row.id);
+      return { status: "aborted", monitor: this.inspectMonitor(row.id), sessionIds: [], eventIds: [] };
     });
   }
 
@@ -995,6 +1008,7 @@ export class RelayStore {
 
       const versionId = this.idFactory();
       const manifest = {
+        observer: monitor.observer ?? (monitor.detector.kind === "deadline_reached" ? { provider: "clock" } : null),
         detector: monitor.detector,
         schedule,
         retry,
@@ -1209,6 +1223,7 @@ export class RelayStore {
       .prepare("SELECT * FROM monitor_versions WHERE id = ?")
       .get(row.active_version_id);
     const observationRow = this.latestObservationRow(row.id);
+    const manifest = decodeJson(versionRow?.manifest_json) ?? {};
     return {
       monitor_id: row.id,
       session_id: row.session_id,
@@ -1218,6 +1233,8 @@ export class RelayStore {
       fire_on_initial_match: Boolean(row.fire_on_initial_match),
       active_version_id: row.active_version_id,
       artifact_hash: versionRow?.artifact_hash ?? null,
+      observer: manifest.observer ?? (decodeJson(row.detector_json).kind === "deadline_reached" ? { provider: "clock" } : null),
+      artifact: manifest.artifact,
       detector: decodeJson(row.detector_json),
       schedule: decodeJson(row.schedule_json),
       retry: decodeJson(row.retry_json),

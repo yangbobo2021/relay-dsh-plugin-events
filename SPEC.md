@@ -42,7 +42,8 @@ operations and two replaceable provider registrations:
   with `prepare`, `checkMonitor`, and lifecycle-safe disposal;
 - Wait/Event operations: `registerWaits`, `cancelWaits`, `listWaits`,
   `handleEvent`, and `dispatchSession`;
-- bounded Monitor persistence operations used by the Monitor provider. No SQLite
+- Monitor persistence operations: `beginMonitorCheck`, `completeMonitorCheck`,
+  `failMonitorCheck`, `abandonMonitorCheck`, and `listDueMonitors`. No SQLite
   handle, mutable map, or DSH Agent object crosses the service boundary.
 
 Provider registration is owned by the registering Cordis fiber. Duplicate active
@@ -56,6 +57,11 @@ the Monitor-unavailable state without unloading Events.
   once.
 - Delivery creation and Wait claim are atomic.
 - Failed admission keeps the same Event, Delivery, and Activation IDs queued.
+- Admission succeeds when the stable inbox message has been flushed to DSH
+  persistence, not when the model turn finishes. A retry recognizes the persisted
+  Activation message and does not enqueue another follow-up.
+- Reappearing Monitor trigger keys do not create another Delivery or pause a
+  rearmed Monitor; its replacement Wait stays active.
 - A background recovery scan retries queued Deliveries after failure or Host restart.
 - Events never create DSH Sessions and never switch the selected Web Session.
 - Shutdown stops new operations, waits for in-flight work, disposes routes/listeners,
@@ -74,4 +80,3 @@ the Monitor-unavailable state without unloading Events.
 The release must pass unit, contract, packed-package, official-DSH, and composition
 acceptance. The executable scenario list is in
 [`docs/acceptance-scenarios.md`](docs/acceptance-scenarios.md).
-

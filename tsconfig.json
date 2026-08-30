@@ -1,4 +1,5 @@
 {
+  "extends": "./node_modules/.relay-dsh-types.json",
   "compilerOptions": {
     "target": "ES2024",
     "module": "ESNext",

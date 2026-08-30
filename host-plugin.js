@@ -12,7 +12,6 @@ export async function apply(ctx, config = {}) {
     resolveAgent: createSharedAgentLookup(ctx),
     debug: config.debug ?? false,
     async awaitDurable(agent) {
-      await agent.whenIdle();
       await ctx.sessions.flush(agent.session);
     },
   });
@@ -34,11 +33,11 @@ export async function apply(ctx, config = {}) {
   }), "relay events ingress");
   const attach = agent => {
     if (!ctx.agents.roots().includes(agent)) return;
-    installRelayAgentBridge(agent.ctx, {
+    ctx.effect(() => installRelayAgentBridge(agent.ctx, {
       sessionId: agent.id,
       registerWaits: input => events.registerWaits(input),
       cancelWaits: sessionId => events.cancelWaits(sessionId),
-    });
+    }), "relay events tools");
   };
   ctx.effect(() => ctx.on("agent/created", ({ agent }) => attach(agent)), "relay events agent bridge");
   for (const agent of ctx.agents.roots()) attach(agent);
