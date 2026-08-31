@@ -29,6 +29,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const sourceRoot = resolve(process.argv[2], 'node_modules/.pnpm/node_modules/@deepseek-ai');
   const paths = {};
   for (const entry of readdirSync(sourceRoot)) {
+    if (!existsSync(join(sourceRoot, entry, 'package.json'))) continue;
     const directory = realpathSync(join(sourceRoot, entry));
     const manifestPath = join(directory, 'package.json');
     if (!existsSync(manifestPath)) continue;
