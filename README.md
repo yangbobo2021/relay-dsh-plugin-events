@@ -5,9 +5,12 @@ core for official DeepSeek Harness. It adds Agent tools, generic JSON ingress,
 delivery to the owning existing Session, recovery, and a Waiting Events settings
 surface without adding an execution backend.
 
+The `internal` npm channel is public for integration testing. It has no stability
+or compatibility guarantee and must not be treated as `latest`, `next`, or a
+production release.
+
 ```bash
-# After building this repository (see below):
-dsh plugin --profile web add ./relay-dsh-plugin-events-0.1.0.tgz
+dsh plugin --profile web add --save-exact relay-dsh-plugin-events@internal
 dsh web
 ```
 
@@ -20,9 +23,9 @@ See [SPEC.md](SPEC.md) and
 
 Set `DSH_ROOT` to the prepared immutable official DSH checkout, then run
 `npm ci --ignore-scripts && npm run verify && npm pack`.
-The tarball includes built runtime files. A raw GitHub checkout intentionally does
-not track `lib/`; do not install `#main` as if it were a built release. This delivery
-does not claim an npm registry publication.
+The npm package and locally packed tarball include built runtime files. A raw
+GitHub checkout intentionally does not track `lib/`; do not install `#main` as if
+it were a built release.
 
 Tested official DSH reference:
 `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`.
