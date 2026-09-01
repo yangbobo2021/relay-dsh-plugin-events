@@ -1,6 +1,6 @@
 {
   "name": "relay-dsh-plugin-events",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Durable provider-neutral Wait, Event, and Delivery runtime for DeepSeek Harness.",
   "keywords": [
     "dsh-plugin",
@@ -41,6 +41,7 @@
     "./package.json": "./package.json"
   },
   "files": [
+    "README.zh.md",
     "README.md",
     "SPEC.md",
     "docs",
