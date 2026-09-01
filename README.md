@@ -3,7 +3,7 @@
 > **Now supports the latest DSH `0.1.2-alpha.2`.** The same plugin release is verified on DSH `0.1.2-alpha.2` and `0.1.1-rc.2`. [Install it and try the latest DSH](https://www.npmjs.com/package/relay-dsh-plugin-events) · [Compatibility details](docs/dsh-0.1.2-alpha.2.md).
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add relay-dsh-plugin-events@0.2.0-rc.1
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add relay-dsh-plugin-events@0.2.0
 npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
 
@@ -17,7 +17,7 @@ delivery to the owning existing Session, recovery, and a Waiting Events settings
 surface without adding an execution backend.
 
 The older `internal` npm channel remains available for integration testing and
-does not carry this compatibility guarantee. Use the exact `0.2.0-rc.1`
+does not carry this compatibility guarantee. Use the exact `0.2.0`
 versions in the latest-DSH command above; do not substitute `@internal`.
 
 ```bash

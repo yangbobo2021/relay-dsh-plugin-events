@@ -3,7 +3,7 @@
 > **现已支持最新 DSH `0.1.2-alpha.2`。** 同一插件版本已在 DSH `0.1.2-alpha.2` 与 `0.1.1-rc.2` 上完成兼容验证。[安装插件，立即体验最新版 DSH](https://www.npmjs.com/package/relay-dsh-plugin-events) · [兼容性详情](docs/dsh-0.1.2-alpha.2.md)。
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add relay-dsh-plugin-events@0.2.0-rc.1
+npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add relay-dsh-plugin-events@0.2.0
 npx @deepseek-ai/dsh@0.1.2-alpha.2 web
 ```
 
@@ -16,7 +16,7 @@ Wait/Event/Delivery 核心。它提供 Agent 工具、通用 JSON 事件入口�
 Session 投递、故障恢复以及 Waiting Events 设置界面，但不增加执行后端。
 
 旧的 `internal` npm 通道继续用于集成测试，不包含此次兼容保证。请使用上方最新版
-DSH 命令中精确的 `0.2.0-rc.1` 版本，不要替换为 `@internal`。
+DSH 命令中精确的 `0.2.0` 版本，不要替换为 `@internal`。
 
 ```bash
 dsh plugin --profile web add --save-exact relay-dsh-plugin-events@internal

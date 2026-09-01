@@ -1,6 +1,6 @@
 {
   "name": "relay-dsh-plugin-events",
-  "version": "0.2.0-rc.1",
+  "version": "0.2.0",
   "description": "Durable provider-neutral Wait, Event, and Delivery runtime for DeepSeek Harness.",
   "keywords": [
     "dsh-plugin",
@@ -20,7 +20,7 @@
   },
   "publishConfig": {
     "access": "public",
-    "tag": "next"
+    "tag": "latest"
   },
   "scripts": {
     "prepare:dsh": "scripts/link-dsh-development-peers.sh",
