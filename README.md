@@ -1,13 +1,13 @@
 # Relay Events for DeepSeek Harness
 
-> **Now supports the latest DSH `0.1.2-alpha.2`.** The same plugin release is verified on DSH `0.1.2-alpha.2` and `0.1.1-rc.2`. [Install it and try the latest DSH](https://www.npmjs.com/package/relay-dsh-plugin-events) · [Compatibility details](docs/dsh-0.1.2-alpha.2.md).
+> **Now supports the latest DSH `0.1.2-alpha.3`.** Plugin `0.2.1` is verified on DSH `0.1.2-alpha.3`, `0.1.2-alpha.2`, and `0.1.1-rc.2`. [Install it and try the latest DSH](https://www.npmjs.com/package/relay-dsh-plugin-events) · [Compatibility details](docs/dsh-0.1.2-alpha.3.md).
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-alpha.2 plugin --profile web add relay-dsh-plugin-events@0.2.0
-npx @deepseek-ai/dsh@0.1.2-alpha.2 web
+npx @deepseek-ai/dsh@0.1.2-alpha.3 plugin --profile web add relay-dsh-plugin-events@0.2.1
+npx @deepseek-ai/dsh@0.1.2-alpha.3 web
 ```
 
-[![DSH compatibility](https://img.shields.io/badge/DSH-0.1.1--rc.2%20%7C%200.1.2--alpha.2-2f7d68)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-0.1.1--rc.2%20%7C%200.1.2--alpha.2%20%7C%200.1.2--alpha.3-2f7d68)](https://github.com/deepseek-ai/deepseek-harness)
 
 English | [中文](README.zh.md)
 
@@ -17,7 +17,7 @@ delivery to the owning existing Session, recovery, and a Waiting Events settings
 surface without adding an execution backend.
 
 The older `internal` npm channel remains available for integration testing and
-does not carry this compatibility guarantee. Use the exact `0.2.0`
+does not carry this compatibility guarantee. Use the exact `0.2.1`
 versions in the latest-DSH command above; do not substitute `@internal`.
 
 ```bash
@@ -39,5 +39,5 @@ GitHub checkout intentionally does not track `lib/`; do not install `#main` as i
 it were a built release.
 
 Tested official DSH references: `0.1.1-rc.2` at
-`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e` and `0.1.2-alpha.2` at
-`0a53fb55bea101816fa226bb964ae2bed71c343b`.
+`b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`, `0.1.2-alpha.2` at
+`0a53fb55bea101816fa226bb964ae2bed71c343b`, and `0.1.2-alpha.3` at `dd6322d604e00eec1ba5e0c8541159906a21094a`.
