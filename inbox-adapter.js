@@ -53,7 +53,9 @@ export class DshInboxAdapter {
         delivery_id: delivery.delivery_id,
         event_id: delivery.event_id,
         wait_ids: delivery.wait_ids,
+        matched_waits: delivery.matched_waits ?? [],
         relation: delivery.relation,
+        routing_evidence: delivery.routing_evidence ?? [],
         event: delivery.event,
       })),
     };

@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS relay_schema (
@@ -37,6 +37,10 @@ export const SCHEMA_SQL = `
     lease_expires_at TEXT,
     accepted_at TEXT,
     last_error TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    next_attempt_at TEXT,
+    terminal_reason_code TEXT,
+    terminal_at TEXT,
     committed_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
@@ -87,6 +91,7 @@ export const SCHEMA_SQL = `
     source TEXT NOT NULL,
     source_event_id TEXT,
     fingerprint TEXT NOT NULL,
+    correlation_key TEXT,
     payload_json TEXT NOT NULL,
     state TEXT NOT NULL CHECK (state IN (
       'received', 'routing', 'dispatched', 'resolved'
@@ -102,6 +107,10 @@ export const SCHEMA_SQL = `
 
   CREATE UNIQUE INDEX IF NOT EXISTS events_source_fingerprint
     ON events(source, fingerprint);
+
+  CREATE UNIQUE INDEX IF NOT EXISTS events_trusted_correlation
+    ON events(correlation_key)
+    WHERE correlation_key IS NOT NULL;
 
   CREATE TABLE IF NOT EXISTS routing_attempts (
     id TEXT PRIMARY KEY,
@@ -142,6 +151,8 @@ export const SCHEMA_SQL = `
   CREATE TABLE IF NOT EXISTS delivery_waits (
     delivery_id TEXT NOT NULL REFERENCES deliveries(id),
     wait_id TEXT NOT NULL REFERENCES waits(id),
+    ordinal INTEGER NOT NULL DEFAULT 0,
+    wait_snapshot_json TEXT,
     PRIMARY KEY (delivery_id, wait_id)
   ) STRICT;
 
@@ -168,6 +179,11 @@ export const SCHEMA_SQL = `
     capabilities_json TEXT NOT NULL,
     next_check_at TEXT,
     consecutive_failures INTEGER NOT NULL DEFAULT 0,
+    paused INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1)),
+    terminal_reason_code TEXT,
+    terminal_reason_detail TEXT,
+    terminal_actor TEXT,
+    terminal_at TEXT,
     version INTEGER NOT NULL DEFAULT 0,
     lease_owner TEXT,
     lease_expires_at TEXT,
@@ -226,4 +242,15 @@ export const SCHEMA_SQL = `
 
   CREATE INDEX IF NOT EXISTS monitor_checks_monitor_time
     ON monitor_checks(monitor_id, started_at);
+
+  CREATE TABLE IF NOT EXISTS notification_outcomes (
+    event_id TEXT PRIMARY KEY REFERENCES events(id),
+    provider TEXT,
+    state TEXT NOT NULL CHECK (state IN ('delivered', 'unavailable', 'failed')),
+    error_class TEXT,
+    receipt_id TEXT,
+    attempt_count INTEGER NOT NULL DEFAULT 0,
+    attempted_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  ) STRICT;
 `;

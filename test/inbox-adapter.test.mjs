@@ -20,6 +20,9 @@ test('EVT-009/010: durable inbox acknowledgement retries reuse the persisted act
   assert.equal(agent.session.events.length, 1);
   assert.equal(agent.session.events[0].data.inserted[0].id, input.activationId);
   assert.match(agent.session.events[0].data.inserted[0].content[0].text, /untrusted external content/);
+  const text = agent.session.events[0].data.inserted[0].content[0].text;
+  assert.match(text, /"matched_waits":\[\]/);
+  assert.match(text, /"routing_evidence":\[\]/);
 });
 
 test('unknown Sessions and oversized Event batches fail before inbox admission', async () => {

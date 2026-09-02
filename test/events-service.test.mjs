@@ -48,6 +48,83 @@ test("router registration is exclusive and disposal restores exact fallback", as
   }
 });
 
+test("EP12-003 management Event history uses stable opaque keyset pagination", async () => {
+  let sequence = 0;
+  const service = createService({ async deliver() {} }, {
+    idFactory: () => `generated-${String(++sequence).padStart(4, "0")}`,
+  });
+  try {
+    for (let index = 0; index < 45; index += 1) {
+      const id = `page-event-${String(index).padStart(2, "0")}`;
+      await service.handleEvent(event(id, `unmatched.${index}`));
+    }
+    const first = await service.managementSnapshot({ eventLimit: 20 });
+    assert.equal(first.events.length, 20);
+    assert.equal(first.event_page.total, 45);
+    assert.ok(first.event_page.next_cursor);
+    const second = await service.managementSnapshot({ eventLimit: 20, eventCursor: first.event_page.next_cursor });
+    assert.equal(second.events.length, 20);
+    assert.equal(new Set([...first.events, ...second.events].map(item => item.event_id)).size, 40);
+
+    // A newer row arriving after page one cannot shift page two or duplicate a row.
+    await service.handleEvent(event("page-event-new", "unmatched.new"));
+    const stableSecond = await service.managementSnapshot({ eventLimit: 20, eventCursor: first.event_page.next_cursor });
+    assert.deepEqual(stableSecond.events.map(item => item.event_id), second.events.map(item => item.event_id));
+    const third = await service.managementSnapshot({ eventLimit: 20, eventCursor: second.event_page.next_cursor });
+    assert.equal(third.events.length, 5);
+    assert.equal(third.event_page.next_cursor, null);
+    await assert.rejects(service.managementSnapshot({ eventLimit: 20, eventCursor: "not-a-cursor" }), /cursor is invalid/);
+  } finally {
+    await service.stop();
+  }
+});
+
+test("EP11-003 global Event rate limit resets by window and never starves management", async () => {
+  let now = new Date("2026-01-01T00:00:00.000Z");
+  const service = createService({ async deliver() {} }, {
+    clock: () => new Date(now),
+    globalEventsPerMinute: 2,
+  });
+  try {
+    await service.handleEvent(event("rate-1", "none.1"));
+    await service.handleEvent(event("rate-2", "none.2"));
+    assert.throws(() => service.handleEvent(event("rate-3", "none.3")),
+      error => error.errorClass === "global_rate_limited" && error.statusCode === 429);
+    const snapshot = await service.managementSnapshot();
+    assert.equal(snapshot.events.length, 2, "management must remain available after Event admission refusal");
+    now = new Date("2026-01-01T00:01:00.000Z");
+    await service.handleEvent(event("rate-4", "none.4"));
+    assert.equal((await service.managementSnapshot()).event_page.total, 3);
+  } finally {
+    await service.stop();
+  }
+});
+
+test("EP11-003 global concurrency limit refuses excess admission without corrupting the active delivery", async () => {
+  let release;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const delivered = [];
+  const service = createService({ async deliver(input) { delivered.push(input.activationId); await blocked; } }, {
+    globalConcurrentEvents: 1,
+  });
+  try {
+    await service.registerWaits(registration("concurrency-owner", "concurrency.one"));
+    const first = service.handleEvent(event("concurrency-1", "concurrency.one"));
+    await new Promise(resolve => setImmediate(resolve));
+    assert.throws(() => service.handleEvent(event("concurrency-2", "concurrency.two")),
+      error => error.errorClass === "global_concurrency_limited" && error.statusCode === 503);
+    assert.equal((await service.managementSnapshot()).event_page.total, 1);
+    release();
+    await first;
+    assert.equal(delivered.length, 1);
+    await service.handleEvent(event("concurrency-3", "concurrency.three"));
+    assert.equal((await service.managementSnapshot()).event_page.total, 2);
+  } finally {
+    release?.();
+    await service.stop();
+  }
+});
+
 test("monitor baseline failure preserves the previous wait set", async () => {
   const service = createService({ async deliver() {} });
   try {
@@ -77,12 +154,13 @@ test("delivery recovery keeps activation identity across failure and restart", a
   const directory = await mkdtemp(join(tmpdir(), "relay-events-recovery-"));
   const databasePath = join(directory, "events.sqlite");
   let failedActivation;
+  let now = new Date("2026-01-01T00:00:00.000Z");
   const first = createService({
     async deliver(input) {
       failedActivation = input.activationId;
       throw new Error("temporary admission failure");
     },
-  }, { databasePath });
+  }, { databasePath, clock: () => new Date(now) });
   try {
     await first.registerWaits(registration("session-recovery", "deploy.done"));
     const result = await first.handleEvent(event("event-recovery", "deploy.done"));
@@ -91,8 +169,9 @@ test("delivery recovery keeps activation identity across failure and restart", a
     await first.stop();
   }
 
+  now = new Date("2026-01-01T00:00:01.000Z");
   const accepted = [];
-  const second = createService({ async deliver(input) { accepted.push(input); } }, { databasePath });
+  const second = createService({ async deliver(input) { accepted.push(input); } }, { databasePath, clock: () => new Date(now) });
   try {
     await second.recoverQueuedDeliveries();
     assert.equal(accepted.length, 1);
