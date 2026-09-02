@@ -31,6 +31,7 @@ export class RelayEventsService extends Service {
     this.boundEventSources = new Map();
     this.notificationProvider = null;
     this.connectorProviders = new Map();
+    this.bundleCatalogProvider = null;
     this.operations = new OperationGate();
     this.admission = new EventAdmissionGate({
       eventsPerMinute: globalEventsPerMinute,
@@ -172,14 +173,46 @@ export class RelayEventsService extends Service {
     };
   }
 
+  registerBundleCatalogProvider(provider) {
+    if (this.stopped) throw new Error("Relay Events is shutting down");
+    if (!provider || !/^[a-z][a-z0-9._-]{0,63}$/u.test(provider.id ?? "") || typeof provider.list !== "function") {
+      throw new TypeError("Bundle catalog provider requires a lowercase stable id and list()");
+    }
+    if (this.bundleCatalogProvider) throw new Error(`Bundle catalog provider ${this.bundleCatalogProvider.id} is already registered`);
+    this.bundleCatalogProvider = provider;
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      if (this.bundleCatalogProvider === provider) this.bundleCatalogProvider = null;
+    };
+  }
+
   registerWaits(input) { return this.operations.run(() => this.runtime.registerWaits(input)); }
   cancelWaits(sessionId) { return this.operations.run(() => this.runtime.cancelWaits(sessionId)); }
   listWaits() { return this.operations.run(() => this.runtime.listWaits()); }
-  managementSnapshot({ eventCursor = null, eventLimit = 20 } = {}) {
+  managementSnapshot({ eventCursor = null, eventLimit = 20, bundleCursor = null, bundleLimit = 20, locale = "en-US" } = {}) {
     return this.operations.run(async () => {
+      assert.ok(Number.isSafeInteger(bundleLimit) && bundleLimit > 0 && bundleLimit <= 100, "Bundle catalog limit is invalid");
       const eventPage = this.store.listEventsPage({ cursor: eventCursor, limit: eventLimit });
+      const providerBundleTypes = this.bundleCatalogProvider
+        ? await this.bundleCatalogProvider.list({ locale: locale === "zh-CN" ? "zh-CN" : "en-US" })
+        : [];
+      if (!Array.isArray(providerBundleTypes)) throw new TypeError("Bundle catalog provider returned an invalid list");
+      const allBundleTypes = [...providerBundleTypes];
+      allBundleTypes.sort((left, right) => bundleCatalogKey(left).localeCompare(bundleCatalogKey(right), "en"));
+      const after = bundleCursor == null ? null : decodeBundleCatalogCursor(bundleCursor);
+      const remainingBundleTypes = after == null ? allBundleTypes : allBundleTypes.filter(entry => bundleCatalogKey(entry) > after);
+      const bundleTypes = remainingBundleTypes.slice(0, bundleLimit);
       return {
         registrations: this.store.listAllWaitRegistrations(),
+        bundle_types: bundleTypes,
+        bundle_page: {
+          next_cursor: remainingBundleTypes.length > bundleLimit && bundleTypes.length > 0
+            ? encodeBundleCatalogCursor(bundleCatalogKey(bundleTypes.at(-1))) : null,
+          total: allBundleTypes.length,
+          limit: bundleLimit,
+        },
         events: eventPage.items,
         event_page: {
           next_cursor: eventPage.next_cursor,
@@ -205,24 +238,26 @@ export class RelayEventsService extends Service {
   updateMonitorCadence(monitorId, intervalSeconds, options) {
     return this.operations.run(() => this.store.updateMonitorCadence(monitorId, intervalSeconds, options));
   }
-  async rebaselineMonitor(monitorId, proposal, options = {}) {
-    const current = this.store.inspectMonitor(monitorId);
-    assert.ok(current, `monitor ${monitorId} does not exist`);
-    if (!this.monitorProvider) throw new Error("Relay Monitors plugin is not installed");
-    const wait = this.store.getWaits(current.session_id).find(candidate => candidate.wait_id === current.wait_id);
-    assert.ok(wait, `monitor wait ${current.wait_id} does not exist`);
-    const [prepared] = await this.monitorProvider.prepare({ waits: [wait], monitors: [{
-      monitor_id: monitorId,
-      wait_id: current.wait_id,
-      lifecycle: current.lifecycle,
-      observer: proposal.observer ?? current.observer,
-      artifact: proposal.artifact ?? current.artifact,
-      detector: proposal.detector ?? current.detector,
-      schedule: proposal.schedule ?? current.schedule,
-      retry: proposal.retry ?? current.retry,
-      capabilities: proposal.capabilities ?? current.capabilities,
-    }] });
-    return this.store.rebaselineMonitor(monitorId, prepared, options);
+  rebaselineMonitor(monitorId, proposal, options = {}) {
+    return this.operations.run(async () => {
+      const current = this.store.inspectMonitor(monitorId);
+      assert.ok(current, `monitor ${monitorId} does not exist`);
+      if (!this.monitorProvider) throw new Error("Relay Monitors plugin is not installed");
+      const wait = this.store.getWaits(current.session_id).find(candidate => candidate.wait_id === current.wait_id);
+      assert.ok(wait, `monitor wait ${current.wait_id} does not exist`);
+      const [prepared] = await this.monitorProvider.prepare({ waits: [wait], monitors: [{
+        monitor_id: monitorId,
+        wait_id: current.wait_id,
+        lifecycle: current.lifecycle,
+        observer: proposal.observer ?? current.observer,
+        artifact: proposal.artifact ?? current.artifact,
+        detector: proposal.detector ?? current.detector,
+        schedule: proposal.schedule ?? current.schedule,
+        retry: proposal.retry ?? current.retry,
+        capabilities: proposal.capabilities ?? current.capabilities,
+      }] });
+      return this.store.rebaselineMonitor(monitorId, prepared, options);
+    });
   }
   stopMonitor(monitorId, options) { return this.operations.run(() => this.store.stopMonitor(monitorId, options)); }
   retryActivation(activationId) {
@@ -256,6 +291,7 @@ export class RelayEventsService extends Service {
   beginMonitorCheck(...args) { return this.operations.run(() => this.store.beginMonitorCheck(...args)); }
   completeMonitorCheck(...args) { return this.operations.run(() => this.store.completeMonitorCheck(...args)); }
   failMonitorCheck(...args) { return this.operations.run(() => this.store.failMonitorCheck(...args)); }
+  expireMonitorCheck(...args) { return this.operations.run(() => this.store.expireMonitorCheck(...args)); }
   abandonMonitorCheck(...args) { return this.operations.run(() => this.store.abandonMonitorCheck(...args)); }
   listDueMonitors(...args) { return this.operations.run(() => this.store.listDueMonitors(...args)); }
 
@@ -363,6 +399,24 @@ export class RelayEventsService extends Service {
     this.notificationProvider = null;
     this.connectorProviders.clear();
     this.store.close();
+  }
+}
+
+function bundleCatalogKey(entry) {
+  return `${entry?.type_id ?? ""}\u0000${String(entry?.bundle_version ?? 0).padStart(12, "0")}\u0000${entry?.artifact_hash ?? ""}`;
+}
+
+function encodeBundleCatalogCursor(after) {
+  return Buffer.from(JSON.stringify({ v: 1, after }), "utf8").toString("base64url");
+}
+
+function decodeBundleCatalogCursor(cursor) {
+  try {
+    const value = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
+    if (value?.v !== 1 || typeof value.after !== "string" || value.after.length > 1_000) throw new Error();
+    return value.after;
+  } catch {
+    throw new TypeError("Bundle catalog cursor is invalid");
   }
 }
 

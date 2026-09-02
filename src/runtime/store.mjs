@@ -696,16 +696,25 @@ export class RelayStore {
       };
       const versionId = this.idFactory();
       const timestamp = this.now();
-      const artifactHash = prepared.artifact?.sha256 ?? hashJson(manifest);
-      this.database.prepare(`
-        INSERT INTO monitor_versions (id, monitor_id, artifact_hash, manifest_json, created_by_run_id, created_at)
-        VALUES (?, ?, ?, ?, ?, ?)
-      `).run(versionId, monitorId, artifactHash, encodeJson(manifest), prepared.created_by_run_id ?? null, timestamp);
+      const artifactHash = prepared.artifact?.version_sha256 ?? prepared.artifact?.sha256 ?? hashJson(manifest);
+      const existingVersion = this.database.prepare(`
+        SELECT id, manifest_json FROM monitor_versions WHERE monitor_id = ? AND artifact_hash = ?
+      `).get(monitorId, artifactHash);
+      const activeVersionId = existingVersion?.id ?? versionId;
+      if (existingVersion) {
+        assert.deepEqual(decodeJson(existingVersion.manifest_json), manifest,
+          `monitor ${monitorId} artifact hash conflicts with different version content`);
+      } else {
+        this.database.prepare(`
+          INSERT INTO monitor_versions (id, monitor_id, artifact_hash, manifest_json, created_by_run_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(versionId, monitorId, artifactHash, encodeJson(manifest), prepared.created_by_run_id ?? null, timestamp);
+      }
       const checkId = this.idFactory();
       this.database.prepare(`
         INSERT INTO monitor_checks (id, monitor_id, version_id, kind, state, started_at, finished_at)
         VALUES (?, ?, ?, 'baseline', 'succeeded', ?, ?)
-      `).run(checkId, monitorId, versionId, timestamp, timestamp);
+      `).run(checkId, monitorId, activeVersionId, timestamp, timestamp);
       const sequence = this.database.prepare("SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence FROM observations WHERE monitor_id = ?")
         .get(monitorId).sequence;
       this.database.prepare(`
@@ -719,7 +728,7 @@ export class RelayStore {
             capabilities_json = ?, next_check_at = ?, consecutive_failures = 0,
             state = 'active', version = version + 1, updated_at = ?
         WHERE id = ?
-      `).run(versionId, encodeJson(prepared.detector), encodeJson(schedule), encodeJson(retry),
+      `).run(activeVersionId, encodeJson(prepared.detector), encodeJson(schedule), encodeJson(retry),
         encodeJson(prepared.capabilities ?? {}), row.paused ? null : nextMonitorCheckAt(schedule, this.clock()),
         timestamp, monitorId);
       return this.inspectMonitor(monitorId);
@@ -1345,6 +1354,42 @@ export class RelayStore {
     });
   }
 
+  expireMonitorCheck(snapshot, owner) {
+    return this.transaction(() => {
+      const row = this.requireMonitorCommit(snapshot, owner);
+      const timestamp = this.now();
+      this.database.prepare(`
+        UPDATE monitor_checks
+        SET state = 'failed', error_class = 'bundle_expired',
+            error = 'custom Monitor Bundle expired', finished_at = ?
+        WHERE id = ? AND state = 'running'
+      `).run(timestamp, snapshot.check_id);
+      this.database.prepare(`
+        UPDATE monitors
+        SET state = 'expired', paused = 0, next_check_at = NULL,
+            consecutive_failures = 0, lease_owner = NULL, lease_expires_at = NULL,
+            terminal_reason_code = 'bundle_expired',
+            terminal_reason_detail = 'The custom Monitor Bundle reached its declared expiry.',
+            terminal_actor = 'relay.monitors', terminal_at = ?,
+            version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(timestamp, timestamp, row.id);
+      this.database.prepare(`
+        UPDATE waits SET status = 'cancelled', version = version + 1, updated_at = ?
+        WHERE id = ? AND status = 'active'
+      `).run(timestamp, row.wait_id);
+      const hasLiveWait = this.database.prepare("SELECT 1 FROM waits WHERE session_id = ? AND status IN ('active', 'claimed') LIMIT 1").get(row.session_id);
+      if (!hasLiveWait) {
+        this.database.prepare(`
+          UPDATE sessions SET state = 'created', lease_owner = NULL, lease_expires_at = NULL,
+              version = version + 1, updated_at = ? WHERE id = ?
+        `).run(timestamp, row.session_id);
+      }
+      this.bumpRoutingEpoch();
+      return { status: "expired", monitor: this.inspectMonitor(row.id), eventIds: [], sessionIds: [] };
+    });
+  }
+
   getRoutingEpoch() {
     return this.database
       .prepare("SELECT value FROM runtime_counters WHERE name = 'routing_epoch'")
@@ -1467,7 +1512,7 @@ export class RelayStore {
         capabilities: monitor.capabilities ?? {},
         artifact: monitor.artifact ?? { kind: "fixture" },
       };
-      const artifactHash = monitor.artifact?.sha256 ?? hashJson(manifest);
+      const artifactHash = monitor.artifact?.version_sha256 ?? monitor.artifact?.sha256 ?? hashJson(manifest);
       this.database
         .prepare(`
           INSERT INTO monitors (

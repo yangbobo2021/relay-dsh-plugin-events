@@ -45,6 +45,9 @@ operations, two replaceable providers, and capability-scoped bound sources:
   `route({ event, eventRecord, sessions })`;
 - `registerMonitorProvider(provider)` accepts exactly one active Monitor provider
   with `prepare`, `checkMonitor`, and lifecycle-safe disposal;
+- `registerBundleCatalogProvider(provider)` accepts one live, secret-safe Monitor
+  Bundle catalog projection; management snapshots keyset-page it independently from
+  Event history and never infer creation capabilities from persisted instances;
 - `registerBoundEventSource(provider)` accepts non-overlapping declared Event source
   names and returns an unforgeable capability whose `handleEvent({ event, binding })`
   path can select one active Wait without semantic routing;
@@ -58,6 +61,8 @@ operations, two replaceable providers, and capability-scoped bound sources:
   inspectable outcomes and never fabricate a Session.
 - Monitor lifecycle operations inspect, pause, resume, update cadence, run now, and
   stop with optimistic versions and durable terminal actor/reason evidence.
+  Rebaseline creates an immutable version or reactivates an identical retained
+  version for rollback, always recording a fresh baseline before switching it active.
 
 Provider registration is owned by the registering Cordis fiber. Duplicate active
 providers fail closed. Unloading a provider restores the exact fallback Router or

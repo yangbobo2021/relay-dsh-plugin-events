@@ -11,6 +11,9 @@ const connectors = z.array(z.unknown());
 const managementListOptions = z.object({
   eventCursor: z.string().min(1).max(2048).nullable().optional(),
   eventLimit: z.number().int().min(1).max(100).optional(),
+  bundleCursor: z.string().min(1).max(2048).nullable().optional(),
+  bundleLimit: z.number().int().min(1).max(100).optional(),
+  locale: z.enum(["en-US", "zh-CN"]).optional(),
 });
 const direct = (id, service, method, parameters, result, typeSymbol) => ({
   id: `relay-dsh-plugin-events#${id}`,
@@ -33,6 +36,12 @@ export const RELAY_DESCRIPTORS = [
     jsonParameter("options", managementListOptions, "RelayManagementListOptions"),
   ], z.object({
     registrations,
+    bundle_types: z.array(z.unknown()),
+    bundle_page: z.object({
+      next_cursor: z.string().nullable(),
+      total: z.number().int().nonnegative(),
+      limit: z.number().int().positive(),
+    }),
     events,
     connectors,
     event_page: z.object({

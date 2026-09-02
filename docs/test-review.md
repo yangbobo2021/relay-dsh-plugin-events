@@ -125,3 +125,34 @@ delivery harness.
   `currentTarget` lifetime crash, and a rapid cadence submit that left the visible
   input at 7200 while persisting 3600. The final assertion waits for the independently
   reloaded Monitor summary, so the old UI-only false positive cannot pass.
+
+## Review 12 — Monitor Bundle catalog and rollback
+
+- Service tests page a changing Bundle catalog with opaque keyset cursors, reject
+  malformed cursors and one-over limits, and prove provider unload produces a real
+  empty catalog rather than cached UI state.
+- SQLite rebaseline tests now update to a second immutable version, force a baseline
+  failure and compare the unchanged active version/count, then reactivate the first
+  version while recording a third baseline observation.
+- The packed official DSH run registers 22 synthetic types from a separate fixture
+  extension plus Time and GitHub. It verifies two non-overlapping catalog pages,
+  available/configuration-required states, provider identity, Event/capability data,
+  permission/remediation text, and no browser console or resource errors.
+- That browser gate first failed on 3.68:1 dark-theme remediation contrast, then on
+  ambiguous controls after two pagers existed, then on English provider content after
+  switching to Chinese. Fixes were accepted only after the complete browser matrix
+  passed again; static tests pin the locale reload and `zh` to `zh-CN` mapping.
+
+## Review 13 — extraction migration and final package gate
+
+- Two real-file migration tests persist the pre-extraction `clock` / `deadline_reached`
+  and `github` / `snapshot_changed` shapes, close Events and Monitors, reopen the same
+  SQLite file with extension-owned compatibility providers, and assert the original
+  IDs, active version, baseline, continuation, Session, and stable Event identity.
+- The root package verifier initially failed before import because it ignored the
+  explicit official-DSH checkout and assumed a missing worktree-local directory. It
+  now honors `DSH_ROOT`; the restored run builds, packs, clean-installs, and imports
+  every selected public entry.
+- Final Events verification discovered 58/58 tests with zero skip/todo, and the root
+  integration process discovered 467/467. The external root acceptance report records
+  the final artifact SHA-256 so this package does not self-reference its own tarball.

@@ -48,6 +48,63 @@ test("router registration is exclusive and disposal restores exact fallback", as
   }
 });
 
+test("MB08-008: management catalog provider is live, localized, exclusive, and disappears on unload", async () => {
+  const service = createService({ async deliver() {} });
+  try {
+    const calls = [];
+    const dispose = service.registerBundleCatalogProvider({
+      id: "test.catalog",
+      async list(input) {
+        calls.push(input);
+        return [{ type_id: "time.deadline", status: "available", name: input.locale === "zh-CN" ? "计时器" : "Timer" }];
+      },
+    });
+    assert.throws(() => service.registerBundleCatalogProvider({ id: "test.other", async list() { return []; } }), /already registered/u);
+    const snapshot = await service.managementSnapshot({ locale: "zh-CN" });
+    assert.equal(snapshot.bundle_types[0].name, "计时器");
+    assert.deepEqual(calls, [{ locale: "zh-CN" }]);
+    dispose();
+    dispose();
+    assert.deepEqual((await service.managementSnapshot()).bundle_types, []);
+  } finally {
+    await service.stop();
+  }
+});
+
+test("MB08-008: invalid management catalog output fails instead of showing a false empty state", async () => {
+  const service = createService({ async deliver() {} });
+  try {
+    service.registerBundleCatalogProvider({ id: "test.catalog", async list() { return null; } });
+    await assert.rejects(service.managementSnapshot(), /invalid list/u);
+  } finally {
+    await service.stop();
+  }
+});
+
+test("MB01-003/MB08-010: management Bundle catalog uses stable opaque keyset pages", async () => {
+  const service = createService({ async deliver() {} });
+  let entries = ["fixture.c", "fixture.a", "fixture.b"].map(type_id => ({ type_id, bundle_version: 1 }));
+  try {
+    service.registerBundleCatalogProvider({ id: "test.catalog", async list() {
+      return Object.freeze(structuredClone(entries).map(Object.freeze));
+    } });
+    const first = await service.managementSnapshot({ bundleLimit: 2 });
+    assert.deepEqual(first.bundle_types.map(entry => entry.type_id), ["fixture.a", "fixture.b"]);
+    assert.deepEqual(entries.map(entry => entry.type_id), ["fixture.c", "fixture.a", "fixture.b"],
+      "management must not sort or otherwise mutate provider-owned catalog output");
+    assert.equal(first.bundle_page.total, 3);
+    assert.equal(typeof first.bundle_page.next_cursor, "string");
+    entries = [{ type_id: "fixture.aa", bundle_version: 1 }, ...entries];
+    const second = await service.managementSnapshot({ bundleLimit: 2, bundleCursor: first.bundle_page.next_cursor });
+    assert.deepEqual(second.bundle_types.map(entry => entry.type_id), ["fixture.c"], "a new earlier key cannot duplicate or shift the next page");
+    assert.equal(second.bundle_page.next_cursor, null);
+    await assert.rejects(service.managementSnapshot({ bundleCursor: "not-a-cursor" }), /cursor is invalid/u);
+    await assert.rejects(service.managementSnapshot({ bundleLimit: 101 }), /limit is invalid/u);
+  } finally {
+    await service.stop();
+  }
+});
+
 test("EP12-003 management Event history uses stable opaque keyset pagination", async () => {
   let sequence = 0;
   const service = createService({ async deliver() {} }, {
@@ -150,6 +207,34 @@ test("monitor baseline failure preserves the previous wait set", async () => {
   }
 });
 
+test("MB03-010: an expiring running check terminalizes its Monitor and cancels only its Wait", async () => {
+  const service = createService({ async deliver() {} });
+  try {
+    service.registerMonitorProvider({
+      id: "test.monitors",
+      async prepare({ monitors }) { return monitors.map(monitor => ({ ...monitor, baseline_observation: { state: "waiting" } })); },
+      async checkMonitor() {},
+    });
+    await service.registerWaits({
+      ...registration("expiry-owner", "fixture.done"),
+      monitors: [{
+        monitor_id: "expiry-monitor", wait_id: "wait-expiry-owner-fixture.done", lifecycle: "one_shot",
+        observer: { provider: "custom.bundle" }, artifact: { kind: "sandboxed-bundle" },
+        detector: { kind: "custom.bundle", event_type: "fixture.done" }, schedule: { interval_seconds: 1 },
+      }],
+    });
+    const started = service.beginMonitorCheck("expiry-monitor", "worker", 60_000, { force: true });
+    const expired = service.expireMonitorCheck(started, "worker");
+    assert.equal(expired.status, "expired");
+    assert.equal(expired.monitor.state, "expired");
+    assert.equal(expired.monitor.terminal_reason.code, "bundle_expired");
+    assert.equal(service.listWaits().length, 0);
+    assert.equal((await service.managementSnapshot()).events.length, 0);
+  } finally {
+    await service.stop();
+  }
+});
+
 test("delivery recovery keeps activation identity across failure and restart", async () => {
   const directory = await mkdtemp(join(tmpdir(), "relay-events-recovery-"));
   const databasePath = join(directory, "events.sqlite");
@@ -197,6 +282,49 @@ test("shutdown refuses new operations after in-flight work settles", async () =>
   assert.throws(() => service.listWaits(), /shutting down/);
   release();
   await handling;
+  await stopping;
+});
+
+test("MB03-009: shutdown drains an in-flight custom rebaseline and rejects a late update", async () => {
+  let release;
+  let entered;
+  let calls = 0;
+  const began = new Promise(resolve => { entered = resolve; });
+  const blocked = new Promise(resolve => { release = resolve; });
+  const service = createService({ async deliver() {} });
+  service.registerMonitorProvider({
+    id: "test.monitors",
+    async prepare({ monitors }) {
+      calls += 1;
+      if (calls > 1) { entered(); await blocked; }
+      return monitors.map(monitor => ({ ...monitor, baseline_observation: { revision: calls } }));
+    },
+    async checkMonitor() {},
+  });
+  const proposal = registration("rebaseline-stop", "fixture.done");
+  proposal.monitors = [{
+    monitor_id: "monitor-rebaseline-stop",
+    wait_id: "wait-rebaseline-stop-fixture.done",
+    lifecycle: "one_shot",
+    observer: { provider: "custom.bundle" },
+    detector: { kind: "custom.bundle", event_type: "fixture.done" },
+    schedule: { interval_seconds: 60 },
+    artifact: { kind: "sandboxed-bundle", sha256: "a".repeat(64) },
+  }];
+  await service.registerWaits(proposal);
+  const update = service.rebaselineMonitor("monitor-rebaseline-stop", {
+    schedule: { interval_seconds: 120 },
+    artifact: { kind: "sandboxed-bundle", sha256: "b".repeat(64) },
+  });
+  await began;
+  let stopped = false;
+  const stopping = service.stop().then(() => { stopped = true; });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(stopped, false, "shutdown must wait for the rebaseline operation");
+  assert.throws(() => service.rebaselineMonitor("monitor-rebaseline-stop", {}), /shutting down/u);
+  release();
+  const updated = await update;
+  assert.equal(updated.schedule.interval_seconds, 120);
   await stopping;
 });
 
