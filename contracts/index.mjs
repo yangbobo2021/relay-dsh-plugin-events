@@ -21,3 +21,22 @@ export function validateMonitorProvider(provider) {
   }
   return provider;
 }
+
+export function validateBoundEventSourceProvider(provider) {
+  if (!provider || typeof provider !== "object") throw new TypeError("bound Event source provider is required");
+  if (!/^[a-z][a-z0-9._-]{0,63}$/u.test(provider.id ?? "")) {
+    throw new TypeError("bound Event source provider requires a lowercase stable id");
+  }
+  if (!Array.isArray(provider.sources) || provider.sources.length === 0) {
+    throw new TypeError("bound Event source provider requires at least one source");
+  }
+  for (const source of provider.sources) {
+    if (typeof source !== "string" || source.length === 0 || source.length > 128) {
+      throw new TypeError("bound Event source provider has an invalid source");
+    }
+  }
+  if (new Set(provider.sources).size !== provider.sources.length) {
+    throw new TypeError("bound Event source provider sources must be unique");
+  }
+  return provider;
+}

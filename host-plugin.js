@@ -18,6 +18,11 @@ export async function apply(ctx, config = {}) {
   const events = new RelayEventsService(ctx, {
     databasePath: config.databasePath,
     dispatchPollIntervalMs: config.dispatchPollIntervalMs,
+    routingFailureLimit: config.routingFailureLimit,
+    deliveryFailureLimit: config.deliveryFailureLimit,
+    deliveryRetryBaseMs: config.deliveryRetryBaseMs,
+    globalEventsPerMinute: config.globalEventsPerMinute,
+    globalConcurrentEvents: config.globalConcurrentEvents,
     inbox,
   });
   ctx.effect(() => () => events.stop(), "relayEvents.stop()");
@@ -37,10 +42,34 @@ export async function apply(ctx, config = {}) {
       sessionId: agent.id,
       registerWaits: input => events.registerWaits(input),
       cancelWaits: sessionId => events.cancelWaits(sessionId),
+      manageMonitor: (sessionId, input) => manageOwnedMonitor(events, sessionId, input),
     }), "relay events tools");
   };
   ctx.effect(() => ctx.on("agent/created", ({ agent }) => attach(agent)), "relay events agent bridge");
   for (const agent of ctx.agents.roots()) attach(agent);
+}
+
+async function manageOwnedMonitor(events, sessionId, input) {
+  const monitor = events.inspectMonitor(input.monitorId);
+  if (!monitor || monitor.session_id !== sessionId) throw new Error(`monitor ${input.monitorId} does not belong to this Session`);
+  if (input.action === "inspect") return monitor;
+  if (input.action === "run_now") return events.checkMonitor(input.monitorId, { force: true });
+  if (input.action === "pause") return events.pauseMonitor(input.monitorId, { expectedVersion: input.expectedVersion });
+  if (input.action === "resume") return events.resumeMonitor(input.monitorId, { expectedVersion: input.expectedVersion });
+  if (input.action === "update_cadence") return events.updateMonitorCadence(input.monitorId, input.intervalSeconds, { expectedVersion: input.expectedVersion });
+  if (input.action === "update_target") return events.rebaselineMonitor(input.monitorId, {
+    observer: input.observer,
+    artifact: input.artifact,
+    detector: input.detector,
+    capabilities: input.capabilities,
+  }, { expectedVersion: input.expectedVersion });
+  if (input.action === "stop") return events.stopMonitor(input.monitorId, {
+    expectedVersion: input.expectedVersion,
+    actor: `session:${sessionId}`,
+    reasonCode: input.reasonCode ?? "stopped_by_agent",
+    detail: input.detail ?? "",
+  });
+  throw new Error(`unsupported monitor action ${input.action}`);
 }
 
 function createSharedAgentLookup(ctx) {

@@ -105,6 +105,49 @@ test("rejects invalid and oversized event bodies", async () => {
   assert.equal(oversized.json.error, "payload_too_large");
 });
 
+test("EP11-007 rejects compressed, deeply nested, and many-key bodies before runtime", async () => {
+  let calls = 0;
+  const handler = createRelayEventHandler({
+    relayRuntime: { async handleEvent() { calls += 1; return runtimeResult(); } },
+  });
+  const compressed = responseRecorder();
+  await handler(request({ headers: { "content-encoding": "gzip" }, body: { type: "build.completed" } }), compressed);
+  assert.equal(compressed.status, 415);
+  assert.equal(compressed.json.error, "unsupported_content_encoding");
+
+  let deep = { type: "build.completed" };
+  for (let index = 0; index < 34; index += 1) deep = { type: "build.completed", child: deep };
+  const nested = responseRecorder();
+  await handler(request({ body: deep }), nested);
+  assert.equal(nested.status, 413);
+  assert.equal(nested.json.error, "payload_too_large");
+
+  const keys = { type: "build.completed" };
+  for (let index = 0; index < 10_001; index += 1) keys[`key_${index}`] = index;
+  const many = responseRecorder();
+  await handler(request({ body: keys }), many);
+  assert.equal(many.status, 413);
+  assert.equal(calls, 0);
+});
+
+test("EP11-003 maps global admission limits without exposing internals", async () => {
+  for (const [statusCode, errorClass, publicCode] of [
+    [429, "global_rate_limited", "rate_limited"],
+    [503, "global_concurrency_limited", "temporarily_overloaded"],
+  ]) {
+    const handler = createRelayEventHandler({
+      relayRuntime: { handleEvent() {
+        throw Object.assign(new Error("private internal detail"), { statusCode, errorClass });
+      } },
+    });
+    const response = responseRecorder();
+    await handler(request({ body: { type: "build.completed" } }), response);
+    assert.equal(response.status, statusCode);
+    assert.equal(response.json.error, publicCode);
+    assert.doesNotMatch(JSON.stringify(response.json), /private internal detail/u);
+  }
+});
+
 test("reports Relay delivery failures as server errors", async () => {
   const handler = createRelayEventHandler({
     relayRuntime: { async handleEvent() { throw new Error("database unavailable"); } },

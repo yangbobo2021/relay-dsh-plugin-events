@@ -2,11 +2,12 @@ import { defineTool } from "@deepseek-ai/dsh-tools";
 
 export function installRelayAgentBridge(
   ctx,
-  { sessionId, registerWaits, cancelWaits },
+  { sessionId, registerWaits, cancelWaits, manageMonitor },
 ) {
   if (!sessionId) throw new Error("Relay bridge requires the current DSH session id");
   if (typeof registerWaits !== "function") throw new Error("registerWaits callback is required");
   if (typeof cancelWaits !== "function") throw new Error("cancelWaits callback is required");
+  if (typeof manageMonitor !== "function") throw new Error("manageMonitor callback is required");
 
   const unregisterWaits = ctx.tools.register(defineTool({
     name: "relay_register_waits",
@@ -28,6 +29,31 @@ export function installRelayAgentBridge(
             actors: { type: "array", required: true, items: { type: "string" } },
             entities: { type: "array", required: true, items: { type: "string" } },
             prior_exchange: { type: "string", required: true },
+            continuation: {
+              type: "object",
+              additionalProperties: false,
+              properties: {
+                version: { type: "number", enum: [1] },
+                next_action: { type: "string" },
+                success_condition: { type: "string" },
+                constraints: { type: "array", items: { type: "string" } },
+                artifacts: {
+                  type: "array",
+                  items: {
+                    type: "object",
+                    additionalProperties: false,
+                    properties: {
+                      kind: { type: "string", required: true },
+                      id: { type: "string", required: true },
+                      label: { type: "string" },
+                      url: { type: "string" },
+                    },
+                  },
+                },
+                on_failure: { type: "string" },
+                on_timeout: { type: "string" },
+              },
+            },
           },
         },
       },
@@ -124,7 +150,53 @@ export function installRelayAgentBridge(
     },
   }));
 
-  return () => { unregisterCancel?.(); unregisterWaits?.(); };
+  const unregisterMonitor = ctx.tools.register(defineTool({
+    name: "relay_manage_monitor",
+    description: "Inspect or control one Relay Monitor owned by this conversation.",
+    parameters: {
+      monitor_id: { type: "string", required: true },
+      action: { type: "string", required: true, enum: ["inspect", "pause", "resume", "run_now", "update_cadence", "update_target", "stop"] },
+      expected_version: { type: "integer" },
+      interval_seconds: { type: "integer" },
+      reason_code: { type: "string" },
+      detail: { type: "string" },
+      observer: { type: "object", additionalProperties: false, properties: { provider: { type: "string", required: true } } },
+      artifact: { type: "object", additionalProperties: true, properties: {} },
+      detector: { type: "object", additionalProperties: true, properties: {} },
+      capabilities: { type: "object", additionalProperties: true, properties: {} },
+    },
+    output: {
+      schema: {
+        type: "object",
+        additionalProperties: false,
+        properties: {
+          applied: { type: "boolean", required: true },
+          sessionId: { type: "string", required: true },
+          monitorId: { type: "string", required: true },
+          action: { type: "string", required: true },
+          result: { type: "object", additionalProperties: true, properties: {}, required: true },
+        },
+      },
+      render: (_args, value) => [{ type: "text", text: JSON.stringify(value) }],
+    },
+    async execute(args) {
+      const result = await manageMonitor(sessionId, {
+        monitorId: args.monitor_id,
+        action: args.action,
+        ...(args.expected_version === undefined ? {} : { expectedVersion: args.expected_version }),
+        ...(args.interval_seconds === undefined ? {} : { intervalSeconds: args.interval_seconds }),
+        ...(args.reason_code === undefined ? {} : { reasonCode: args.reason_code }),
+        ...(args.detail === undefined ? {} : { detail: args.detail }),
+        ...(args.observer === undefined ? {} : { observer: args.observer }),
+        ...(args.artifact === undefined ? {} : { artifact: args.artifact }),
+        ...(args.detector === undefined ? {} : { detector: args.detector }),
+        ...(args.capabilities === undefined ? {} : { capabilities: args.capabilities }),
+      });
+      return { applied: true, sessionId, monitorId: args.monitor_id, action: args.action, result };
+    },
+  }));
+
+  return () => { unregisterMonitor?.(); unregisterCancel?.(); unregisterWaits?.(); };
 }
 
 function acknowledgementSchema(flag) {

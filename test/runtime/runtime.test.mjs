@@ -73,7 +73,8 @@ test("the same DSH conversation can register a replacement wait after every even
 });
 
 test("a failed inbox delivery retries with the same activation id", async () => {
-  const store = new RelayStore();
+  let now = new Date("2026-01-01T00:00:00.000Z");
+  const store = new RelayStore(":memory:", { clock: () => new Date(now) });
   const attempts = [];
   let fail = true;
   const runtime = runtimeFor(store, {
@@ -96,6 +97,7 @@ test("a failed inbox delivery retries with the same activation id", async () => 
   const event = emailEvent("event-retry", "Accepted", "Approved.");
 
   const first = await runtime.handleEvent(event);
+  now = new Date(now.getTime() + 1_000);
   const second = await runtime.handleEvent(event);
 
   assert.equal(first.dispatchResults[0].status, "retry");
@@ -224,7 +226,7 @@ test("the Agent can cancel waits after handling an ordinary user message", async
 });
 
 function runtimeFor(store, { router, inbox }) {
-  return new RelayRuntime({ store, router, inbox, workerId: "test-dispatcher" });
+  return new RelayRuntime({ store, router, inbox, workerId: "test-dispatcher", deliveryRetryBaseMs: 1_000 });
 }
 
 function recordingInbox(targets) {

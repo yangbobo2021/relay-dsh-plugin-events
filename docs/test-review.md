@@ -66,3 +66,62 @@ delivery harness.
 - A rearmed recurring Monitor now ignores already committed trigger keys without
   pausing again. The regression checks disappearance/reappearance and the still-active
   replacement Wait. Shutdown lease release is tested against real SQLite.
+
+## Review 8 — continuation, snapshots, and trusted binding
+
+- Added EP-01 continuation normalization with legacy defaults, nested shape and size
+  bounds, atomic failure behavior, and authenticated Agent-tool ownership.
+- Persisted the exact matched Wait snapshot and routing evidence on each Delivery so a
+  later Wait replacement cannot change the admitted continuation context.
+- Replaced insertion-order exclusive selection with deterministic escalation and kept
+  non-exclusive multi-Session fan-out.
+- Added capability-scoped bound Event source registration. Public payload fields cannot
+  assert ownership; stale and cross-Session bindings escalate without claims.
+- Exercised a real schema v4 file migration, not an in-memory reconstructed v5 store.
+- The first test command intentionally failed before discovery because `DSH_ROOT` was
+  absent; it was not counted as a pass. Verification then used official DSH
+  `dd6322d604e00eec1ba5e0c8541159906a21094a` and discovered every expected test with
+  zero skip/todo.
+- Mutation review disabled the new exclusive-conflict guard. EP03-006/008 failed in
+  the routing validator before any Delivery, proving the acceptance test exercises the
+  protection rather than a fixture-only assertion. The guard was restored before the
+  final run.
+
+## Review 9 — Router failure terminalization and recovery
+
+- Added a configurable Router failure budget whose final attempt commits an
+  inspectable escalation instead of leaving an Event permanently in `routing`.
+- The committed decision contains stable public wording and attempt metadata but not
+  the Router's raw error text; the regression injects a sentinel secret and proves it
+  is absent.
+- Extended background recovery to resume both incomplete Events and queued
+  Deliveries. The recovery regression begins with a real rejected ingress call,
+  waits for the scheduler's second attempt, then independently reads SQLite-backed
+  Event state and asserts exactly two attempts and no Delivery.
+
+## Review 10 — productization and browser delivery
+
+- Schema v10 persists notification attempt counts and provider receipts. Tests prove
+  duplicate ingress cannot silently retry and only an explicit failed/unavailable
+  action can retry; the official browser verifies the second unavailable attempt is
+  still visible when no provider exists.
+- Exact rate/concurrency boundaries, fixed public overload/internal errors, stable
+  keyset pagination, retention rollback, and Monitor proposal budgets are asserted
+  against production paths. Events verification discovered 52/52 tests with zero
+  skip/todo, then typecheck, build, and dry-run pack passed.
+- Official DSH `dd6322d604e00eec1ba5e0c8541159906a21094a` accepted the packed management
+  suite: English/Chinese, 1280×720 and 1440×900, destructive keyboard dialogs,
+  focus return, hostile text, Router and credential lifecycles, pagination, Monitor
+  cadence validation/update, terminal/check/trigger evidence, light/dark computed
+  WCAG AA contrast, the full user-facing fault matrix, and console/network cleanliness.
+  A separate Events-only run proved real empty state and background transition to the
+  first durable HTTP Event. Packed Codex and Claude compositions proved the same Event
+  stack boots with both backend adapters and opens an existing backend-bound Session.
+- The browser run initially caught Escape propagation, disconnected focus targets,
+  an unlabeled Relay filter, and onboarding-mask timing. Each failure remained red
+  until the production UI or the test's host-state synchronization was corrected;
+  no force-click, skipped case, or weakened Relay assertion was accepted.
+- The extended browser gate also caught tertiary/status colors below AA, a React
+  `currentTarget` lifetime crash, and a rapid cadence submit that left the visible
+  input at 7200 while persisting 3600. The final assertion waits for the independently
+  reloaded Monitor summary, so the old UI-only false positive cannot pass.

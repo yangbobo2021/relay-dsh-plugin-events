@@ -1,6 +1,8 @@
 # Events Delivery Acceptance Scenarios
 
-Official DSH reference: `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`
+Official DSH references: `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`,
+`0a53fb55bea101816fa226bb964ae2bed71c343b`, and
+`dd6322d604e00eec1ba5e0c8541159906a21094a`.
 
 | ID | Scenario | Required result | Evidence |
 | --- | --- | --- | --- |
@@ -21,4 +23,21 @@ Official DSH reference: `b150a551b8d465e31e418e1b2eaf5e79bbb7d28e`
 | EVT-015 | Clean unload | New operations fail during shutdown; in-flight work settles; listeners, Remote, service, timers, and SQLite are released. | lifecycle integration |
 | EVT-016 | Backend neutrality | Events-only, Events+Codex, and Events+Claude compositions contain no backend import or backend-name branch in Events. | static + official DSH |
 | EVT-017 | Package boundary | Tarball contains built/public artifacts only and imports in a clean directory. | `npm pack` acceptance |
-
+| EVT-018 | Wait continuation | Complete and legacy Waits normalize versioned continuation; invalid/oversized nested values fail before replacing prior Waits. | unit + SQLite |
+| EVT-019 | Matched Wait envelope | Delivery contains only immutable matched Wait snapshots, continuation and routing evidence from the committed routing snapshot. | SQLite + inbox contract |
+| EVT-020 | Exclusive conflict | Cross-Session exact matches involving exclusive Waits escalate independent of insertion order and claim nothing. | randomized-order integration |
+| EVT-021 | Non-exclusive fan-out | Exact non-exclusive matches create one atomic Delivery per Session with complete matched cards. | SQLite integration |
+| EVT-022 | Trusted bound source | Only a registered source capability can submit a binding; public payload ownership fields have no authority. | service + protocol security |
+| EVT-023 | Stale/cross-Session binding | Invalid owner, Wait, version, or Session/Wait pair escalates with no claim or Delivery. | SQLite integration |
+| EVT-024 | Schema upgrade | Existing schema v4/v5/v9 storage upgrades through schema v10, preserving Delivery snapshots and adding notification receipt/attempt evidence. | real file migration |
+| EVT-025 | Router failure terminal state | Repeated Router failure reaches the configured budget, commits one inspectable escalation, creates no Delivery, and omits raw provider errors/secrets. | unit + SQLite |
+| EVT-026 | Incomplete Event recovery | The background scan resumes `received`/`routing` Events and reaches a single terminal decision without redelivery or duplicate attempts. | fake-clock integration + restart |
+| EVT-027 | Conflicting provider identity | Reuse of one source delivery identity with different content fails closed, preserves the original terminal Event, and creates no second record. | SQLite security integration |
+| EVT-028 | Monitor lifecycle | Inspect, cadence update, pause, resume, run-now guard, and stop use optimistic versions, preserve baseline, and persist terminal actor/reason/time. | SQLite + Host/client contract |
+| EVT-029 | Historical management snapshot | Live and terminal Waits/Monitors plus recent Events and decisions remain inspectable without reactivating or mutating them. | management Remote + browser |
+| EVT-030 | Escalation notification outcome | One configured provider receives bounded escalation content once; absent and failed providers record visible `unavailable`/`failed` outcomes without leaking raw errors. | service + SQLite |
+| EVT-031 | Trusted cross-source convergence | A trusted webhook and Monitor transition sharing one canonical correlation key create one Event/Delivery regardless of source order; public payload correlation fields have no authority. | connector-monitor composition |
+| EVT-032 | Notification safe retry | Duplicate ingestion never retries a terminal notification; an explicit retry is allowed only for unavailable/failed outcomes, increments attempts, and stores a bounded provider receipt. | service + SQLite + browser |
+| EVT-033 | Global admission budgets | Exact rate and concurrency limits reject only excess Event admission with stable 429/503 responses while management remains usable. | HTTP + concurrency integration |
+| EVT-034 | Management pagination and focus | Stable keyset pages, state/source filters, background refresh, dialog focus trap/return, Escape isolation, and draft preservation work in English and Chinese. | official DSH browser |
+| EVT-035 | Empty and fault presentation | Events-only UI renders loading/empty/history states, transitions from zero to one background Event, and exposes retryable failures without fabricating success. | official DSH browser + client contract |

@@ -110,6 +110,64 @@ export class RelayStore {
         `);
       });
     }
+    if (fromVersion < 5) {
+      const columns = this.database.prepare("PRAGMA table_info(delivery_waits)").all();
+      const names = new Set(columns.map((column) => column.name));
+      if (!names.has("ordinal")) {
+        this.database.exec("ALTER TABLE delivery_waits ADD COLUMN ordinal INTEGER NOT NULL DEFAULT 0");
+      }
+      if (!names.has("wait_snapshot_json")) {
+        this.database.exec("ALTER TABLE delivery_waits ADD COLUMN wait_snapshot_json TEXT");
+      }
+    }
+    if (fromVersion < 6) {
+      const columns = this.database.prepare("PRAGMA table_info(monitors)").all();
+      const names = new Set(columns.map((column) => column.name));
+      for (const [name, type] of [
+        ["paused", "INTEGER NOT NULL DEFAULT 0 CHECK (paused IN (0, 1))"],
+        ["terminal_reason_code", "TEXT"],
+        ["terminal_reason_detail", "TEXT"],
+        ["terminal_actor", "TEXT"],
+        ["terminal_at", "TEXT"],
+      ]) {
+        if (!names.has(name)) this.database.exec(`ALTER TABLE monitors ADD COLUMN ${name} ${type}`);
+      }
+    }
+    if (fromVersion < 7) {
+      this.database.exec(`
+        CREATE TABLE IF NOT EXISTS notification_outcomes (
+          event_id TEXT PRIMARY KEY REFERENCES events(id),
+          provider TEXT,
+          state TEXT NOT NULL CHECK (state IN ('delivered', 'unavailable', 'failed')),
+          error_class TEXT,
+          attempted_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        ) STRICT;
+      `);
+    }
+    if (fromVersion < 8) {
+      const columns = this.database.prepare("PRAGMA table_info(events)").all();
+      if (!columns.some(column => column.name === "correlation_key")) {
+        this.database.exec("ALTER TABLE events ADD COLUMN correlation_key TEXT");
+      }
+      this.database.exec("CREATE UNIQUE INDEX IF NOT EXISTS events_trusted_correlation ON events(correlation_key) WHERE correlation_key IS NOT NULL");
+    }
+    if (fromVersion < 9) {
+      const columns = new Set(this.database.prepare("PRAGMA table_info(activations)").all().map(column => column.name));
+      for (const [name, type] of [
+        ["attempt_count", "INTEGER NOT NULL DEFAULT 0"],
+        ["next_attempt_at", "TEXT"],
+        ["terminal_reason_code", "TEXT"],
+        ["terminal_at", "TEXT"],
+      ]) {
+        if (!columns.has(name)) this.database.exec(`ALTER TABLE activations ADD COLUMN ${name} ${type}`);
+      }
+    }
+    if (fromVersion < 10) {
+      const columns = new Set(this.database.prepare("PRAGMA table_info(notification_outcomes)").all().map(column => column.name));
+      if (!columns.has("receipt_id")) this.database.exec("ALTER TABLE notification_outcomes ADD COLUMN receipt_id TEXT");
+      if (!columns.has("attempt_count")) this.database.exec("ALTER TABLE notification_outcomes ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+    }
   }
 
   close() {
@@ -207,19 +265,78 @@ export class RelayStore {
   }
 
   listWaitRegistrations() {
+    return this.listAllWaitRegistrations()
+      .filter((registration) =>
+        registration.waits.some((wait) => wait.status === "active" || wait.status === "claimed") ||
+        registration.monitors.some((monitor) =>
+          new Set(["active", "paused", "triggered", "degraded"]).has(monitor.state)
+        )
+      );
+  }
+
+  listAllWaitRegistrations() {
     return this.database
       .prepare("SELECT * FROM sessions ORDER BY updated_at DESC, id")
       .all()
       .map((row) => ({
         ...hydrateWaitRegistration(row, this.getWaits(row.id)),
         monitors: this.getMonitors(row.id),
-      }))
-      .filter((registration) =>
-        registration.waits.some((wait) => wait.status === "active" || wait.status === "claimed") ||
-        registration.monitors.some((monitor) =>
-          new Set(["active", "triggered", "degraded"]).has(monitor.state)
-        )
-      );
+      }));
+  }
+
+  listEvents(limit = 100) {
+    return this.listEventsPage({ limit }).items;
+  }
+
+  listEventsPage({ limit = 20, cursor = null } = {}) {
+    assert.ok(Number.isSafeInteger(limit) && limit > 0 && limit <= 100, "Event history limit is invalid");
+    const boundary = cursor == null ? null : decodeHistoryCursor(cursor);
+    const rows = boundary == null
+      ? this.database.prepare(`
+          SELECT id, received_at FROM events
+          ORDER BY received_at DESC, id DESC LIMIT ?
+        `).all(limit + 1)
+      : this.database.prepare(`
+          SELECT id, received_at FROM events
+          WHERE received_at < ? OR (received_at = ? AND id < ?)
+          ORDER BY received_at DESC, id DESC LIMIT ?
+        `).all(boundary.received_at, boundary.received_at, boundary.id, limit + 1);
+    const hasMore = rows.length > limit;
+    const pageRows = rows.slice(0, limit);
+    const last = pageRows.at(-1);
+    return {
+      items: pageRows.map(row => this.inspectEvent(row.id)),
+      next_cursor: hasMore && last ? encodeHistoryCursor(last) : null,
+      total: this.database.prepare("SELECT COUNT(*) AS count FROM events").get().count,
+    };
+  }
+
+  getNotificationOutcome(eventId) {
+    const row = this.database.prepare("SELECT * FROM notification_outcomes WHERE event_id = ?").get(eventId);
+    return row ? {
+      event_id: row.event_id,
+      provider: row.provider,
+      state: row.state,
+      error_class: row.error_class,
+      receipt_id: row.receipt_id,
+      attempt_count: row.attempt_count,
+      attempted_at: row.attempted_at,
+      updated_at: row.updated_at,
+    } : null;
+  }
+
+  recordNotificationOutcome(eventId, { provider = null, state, errorClass = null, receiptId = null }) {
+    assert.ok(new Set(["delivered", "unavailable", "failed"]).has(state), "notification state is invalid");
+    this.requireEventRow(eventId);
+    const timestamp = this.now();
+    this.database.prepare(`
+      INSERT INTO notification_outcomes (event_id, provider, state, error_class, receipt_id, attempt_count, attempted_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(event_id) DO UPDATE SET provider=excluded.provider, state=excluded.state,
+        error_class=excluded.error_class, receipt_id=excluded.receipt_id,
+        attempt_count=notification_outcomes.attempt_count + 1, updated_at=excluded.updated_at
+    `).run(eventId, provider, state, errorClass, receiptId, timestamp, timestamp);
+    return this.getNotificationOutcome(eventId);
   }
 
   listQueuedDeliverySessionIds() {
@@ -232,6 +349,25 @@ export class RelayStore {
       `)
       .all()
       .map(row => row.session_id);
+  }
+
+  listRoutableEventIds(limit = 100) {
+    return this.database
+      .prepare(`
+        SELECT id
+        FROM events
+        WHERE state IN ('received', 'routing')
+        ORDER BY received_at, id
+        LIMIT ?
+      `)
+      .all(limit)
+      .map(row => row.id);
+  }
+
+  countRoutingAttempts(eventId) {
+    return this.database
+      .prepare("SELECT COUNT(*) AS count FROM routing_attempts WHERE event_id = ?")
+      .get(eventId).count;
   }
 
   getActivation(activationId) {
@@ -250,6 +386,9 @@ export class RelayStore {
 
       if (activationRow?.lease_owner && activationRow.lease_expires_at > now) {
         return { status: "busy" };
+      }
+      if (activationRow?.next_attempt_at && activationRow.next_attempt_at > now) {
+        return { status: "retry_scheduled", activation: hydrateActivation(activationRow) };
       }
 
       let deliveryRows;
@@ -290,7 +429,8 @@ export class RelayStore {
       this.database
         .prepare(`
           UPDATE activations
-          SET lease_owner = ?, lease_expires_at = ?, last_error = NULL, updated_at = ?
+          SET lease_owner = ?, lease_expires_at = ?, last_error = NULL,
+              next_attempt_at = NULL, updated_at = ?
           WHERE id = ? AND state = 'active'
         `)
         .run(owner, leaseExpiresAt, now, activationRow.id);
@@ -376,20 +516,79 @@ export class RelayStore {
     });
   }
 
-  failDispatch(sessionId, activationId, owner, error) {
+  failDispatch(sessionId, activationId, owner, error, { failureLimit = 5, baseDelayMs = 1_000 } = {}) {
     return this.transaction(() => {
       const activation = this.database.prepare("SELECT * FROM activations WHERE id = ?").get(activationId);
       assert.ok(activation, `activation ${activationId} does not exist`);
       assert.equal(activation.session_id, sessionId, `activation ${activationId} has wrong session`);
       assert.equal(activation.state, "active", `activation ${activationId} is not active`);
       assert.equal(activation.lease_owner, owner, `worker does not own activation ${activationId}`);
-      this.database
-        .prepare(`
+      assert.ok(Number.isSafeInteger(failureLimit) && failureLimit > 0, "delivery failure limit must be positive");
+      assert.ok(Number.isSafeInteger(baseDelayMs) && baseDelayMs > 0, "delivery retry base delay must be positive");
+      const attemptCount = (activation.attempt_count ?? 0) + 1;
+      const timestamp = this.now();
+      if (attemptCount < failureLimit) {
+        const delay = Math.min(baseDelayMs * (2 ** (attemptCount - 1)), 3_600_000);
+        const nextAttemptAt = new Date(this.clock().getTime() + delay).toISOString();
+        this.database.prepare(`
           UPDATE activations
-          SET lease_owner = NULL, lease_expires_at = NULL, last_error = ?, updated_at = ?
+          SET lease_owner = NULL, lease_expires_at = NULL, last_error = ?,
+              attempt_count = ?, next_attempt_at = ?, updated_at = ?
           WHERE id = ?
-        `)
-        .run(error, this.now(), activationId);
+        `).run(error, attemptCount, nextAttemptAt, timestamp, activationId);
+        return { status: "retry", activation: this.getActivation(activationId), eventIds: [] };
+      }
+
+      const deliveryIds = decodeJson(activation.delivery_ids_json);
+      const eventIds = new Set();
+      for (const deliveryId of deliveryIds) {
+        const delivery = this.database.prepare("SELECT * FROM deliveries WHERE id = ?").get(deliveryId);
+        assert.ok(delivery, `delivery ${deliveryId} does not exist`);
+        eventIds.add(delivery.event_id);
+        this.database.prepare("UPDATE deliveries SET state = 'failed', updated_at = ? WHERE id = ?")
+          .run(timestamp, deliveryId);
+      }
+      for (const eventId of eventIds) {
+        const pending = this.database.prepare("SELECT COUNT(*) AS count FROM deliveries WHERE event_id = ? AND state IN ('queued', 'running')")
+          .get(eventId).count;
+        if (pending === 0) this.database.prepare("UPDATE events SET state = 'resolved', version = version + 1, updated_at = ? WHERE id = ?")
+          .run(timestamp, eventId);
+      }
+      this.database.prepare(`
+        UPDATE activations
+        SET state = 'committed', lease_owner = NULL, lease_expires_at = NULL,
+            last_error = ?, attempt_count = ?, next_attempt_at = NULL,
+            terminal_reason_code = 'delivery_retry_exhausted', terminal_at = ?,
+            committed_at = ?, updated_at = ?
+        WHERE id = ?
+      `).run(error, attemptCount, timestamp, timestamp, timestamp, activationId);
+      return { status: "failed", activation: this.getActivation(activationId), eventIds: [...eventIds] };
+    });
+  }
+
+  retryActivation(activationId) {
+    return this.transaction(() => {
+      const row = this.database.prepare("SELECT * FROM activations WHERE id = ?").get(activationId);
+      assert.ok(row, `activation ${activationId} does not exist`);
+      assert.equal(row.state, "committed", `activation ${activationId} is not terminal`);
+      assert.equal(row.terminal_reason_code, "delivery_retry_exhausted", `activation ${activationId} is not retryable`);
+      const timestamp = this.now();
+      const deliveryIds = decodeJson(row.delivery_ids_json);
+      for (const deliveryId of deliveryIds) {
+        const delivery = this.database.prepare("SELECT * FROM deliveries WHERE id = ?").get(deliveryId);
+        assert.ok(delivery, `delivery ${deliveryId} does not exist`);
+        assert.equal(delivery.state, "failed", `delivery ${deliveryId} is not failed`);
+        this.database.prepare("UPDATE deliveries SET state = 'queued', updated_at = ? WHERE id = ?").run(timestamp, deliveryId);
+        this.database.prepare("UPDATE events SET state = 'dispatched', version = version + 1, updated_at = ? WHERE id = ?")
+          .run(timestamp, delivery.event_id);
+      }
+      this.database.prepare(`
+        UPDATE activations
+        SET state = 'active', attempt_count = 0, next_attempt_at = NULL,
+            terminal_reason_code = NULL, terminal_at = NULL, committed_at = NULL,
+            last_error = NULL, updated_at = ?
+        WHERE id = ?
+      `).run(timestamp, activationId);
       return this.getActivation(activationId);
     });
   }
@@ -404,6 +603,149 @@ export class RelayStore {
   getMonitor(monitorId) {
     const row = this.database.prepare("SELECT * FROM monitors WHERE id = ?").get(monitorId);
     return row ? this.hydrateMonitor(row) : null;
+  }
+
+  pauseMonitor(monitorId, { expectedVersion } = {}) {
+    return this.transaction(() => {
+      const row = this.requireMonitorRow(monitorId);
+      if (expectedVersion != null) assert.equal(row.version, expectedVersion, `monitor ${monitorId} version changed`);
+      assert.ok(new Set(["active", "degraded"]).has(row.state), `monitor ${monitorId} cannot be paused from ${row.state}`);
+      assert.equal(Boolean(row.paused), false, `monitor ${monitorId} is already paused`);
+      assert.ok(!row.lease_owner || row.lease_expires_at <= this.now(), `monitor ${monitorId} is busy`);
+      this.database.prepare(`
+        UPDATE monitors
+        SET paused = 1, next_check_at = NULL, lease_owner = NULL,
+            lease_expires_at = NULL, version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(this.now(), monitorId);
+      return this.inspectMonitor(monitorId);
+    });
+  }
+
+  resumeMonitor(monitorId, { expectedVersion } = {}) {
+    return this.transaction(() => {
+      const row = this.requireMonitorRow(monitorId);
+      if (expectedVersion != null) assert.equal(row.version, expectedVersion, `monitor ${monitorId} version changed`);
+      assert.equal(Boolean(row.paused), true, `monitor ${monitorId} is not paused`);
+      assert.ok(new Set(["active", "degraded"]).has(row.state), `monitor ${monitorId} cannot resume from ${row.state}`);
+      const timestamp = this.now();
+      this.database.prepare(`
+        UPDATE monitors
+        SET paused = 0, next_check_at = ?, version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(nextMonitorCheckAt(decodeJson(row.schedule_json), this.clock()), timestamp, monitorId);
+      return this.inspectMonitor(monitorId);
+    });
+  }
+
+  updateMonitorCadence(monitorId, intervalSeconds, { expectedVersion } = {}) {
+    assert.ok(Number.isSafeInteger(intervalSeconds) && intervalSeconds >= 1 && intervalSeconds <= 86_400, "monitor interval_seconds must be a whole number from 1 to 86400");
+    return this.transaction(() => {
+      const row = this.requireMonitorRow(monitorId);
+      if (expectedVersion != null) assert.equal(row.version, expectedVersion, `monitor ${monitorId} version changed`);
+      assert.ok(new Set(["active", "degraded"]).has(row.state), `monitor ${monitorId} cannot be updated from ${row.state}`);
+      const schedule = { ...decodeJson(row.schedule_json), interval_seconds: intervalSeconds };
+      const timestamp = this.now();
+      this.database.prepare(`
+        UPDATE monitors
+        SET schedule_json = ?, next_check_at = ?, version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(encodeJson(schedule), row.paused ? null : nextMonitorCheckAt(schedule, this.clock()), timestamp, monitorId);
+      return this.inspectMonitor(monitorId);
+    });
+  }
+
+  rebaselineMonitor(monitorId, prepared, { expectedVersion } = {}) {
+    assert.ok(prepared?.baseline_observation && typeof prepared.baseline_observation === "object", "monitor baseline_observation is required");
+    return this.transaction(() => {
+      const row = this.requireMonitorRow(monitorId);
+      if (expectedVersion != null) assert.equal(row.version, expectedVersion, `monitor ${monitorId} version changed`);
+      assert.ok(new Set(["active", "degraded"]).has(row.state), `monitor ${monitorId} cannot be updated from ${row.state}`);
+      assert.ok(!row.lease_owner || row.lease_expires_at <= this.now(), `monitor ${monitorId} is busy`);
+      assert.equal(prepared.monitor_id, monitorId, "monitor identity cannot change during rebaseline");
+      assert.equal(prepared.wait_id, row.wait_id, "monitor wait cannot change during rebaseline");
+      const schedule = {
+        interval_seconds: prepared.schedule?.interval_seconds ?? decodeJson(row.schedule_json).interval_seconds,
+        jitter_seconds: prepared.schedule?.jitter_seconds ?? decodeJson(row.schedule_json).jitter_seconds ?? 0,
+      };
+      assert.ok(Number.isSafeInteger(schedule.interval_seconds) && schedule.interval_seconds >= 1 && schedule.interval_seconds <= 86_400,
+        "monitor interval_seconds must be a whole number from 1 to 86400");
+      assert.ok(Number.isSafeInteger(schedule.jitter_seconds) && schedule.jitter_seconds >= 0
+        && schedule.jitter_seconds <= Math.min(schedule.interval_seconds, 3_600),
+      "monitor jitter_seconds must be a bounded whole number no greater than interval_seconds");
+      const retry = {
+        degraded_after: prepared.retry?.degraded_after ?? decodeJson(row.retry_json).degraded_after,
+        fail_after: prepared.retry?.fail_after ?? decodeJson(row.retry_json).fail_after,
+        backoff_seconds: prepared.retry?.backoff_seconds ?? decodeJson(row.retry_json).backoff_seconds ?? [],
+      };
+      assert.ok(Number.isSafeInteger(retry.degraded_after) && retry.degraded_after >= 1 && retry.degraded_after <= 100,
+        "monitor degraded_after must be a whole number from 1 to 100");
+      assert.ok(Number.isSafeInteger(retry.fail_after) && retry.fail_after >= retry.degraded_after && retry.fail_after <= 100,
+        "monitor fail_after must follow degraded_after and be at most 100");
+      assert.ok(Array.isArray(retry.backoff_seconds) && retry.backoff_seconds.length <= 20
+        && retry.backoff_seconds.every(value => Number.isSafeInteger(value) && value >= 1 && value <= 86_400),
+      "monitor backoff_seconds must contain at most 20 whole-second delays from 1 to 86400");
+      const observer = prepared.observer ?? (prepared.detector?.kind === "deadline_reached" ? { provider: "clock" } : null);
+      const manifest = {
+        observer,
+        detector: prepared.detector,
+        schedule,
+        retry,
+        capabilities: prepared.capabilities ?? {},
+        artifact: prepared.artifact ?? { kind: "fixture" },
+      };
+      const versionId = this.idFactory();
+      const timestamp = this.now();
+      const artifactHash = prepared.artifact?.sha256 ?? hashJson(manifest);
+      this.database.prepare(`
+        INSERT INTO monitor_versions (id, monitor_id, artifact_hash, manifest_json, created_by_run_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(versionId, monitorId, artifactHash, encodeJson(manifest), prepared.created_by_run_id ?? null, timestamp);
+      const checkId = this.idFactory();
+      this.database.prepare(`
+        INSERT INTO monitor_checks (id, monitor_id, version_id, kind, state, started_at, finished_at)
+        VALUES (?, ?, ?, 'baseline', 'succeeded', ?, ?)
+      `).run(checkId, monitorId, versionId, timestamp, timestamp);
+      const sequence = this.database.prepare("SELECT COALESCE(MAX(sequence), -1) + 1 AS sequence FROM observations WHERE monitor_id = ?")
+        .get(monitorId).sequence;
+      this.database.prepare(`
+        INSERT INTO observations (id, check_id, monitor_id, sequence, state_hash, data_json, observed_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(this.idFactory(), checkId, monitorId, sequence, hashJson(prepared.baseline_observation),
+        encodeJson(prepared.baseline_observation), timestamp);
+      this.database.prepare(`
+        UPDATE monitors
+        SET active_version_id = ?, detector_json = ?, schedule_json = ?, retry_json = ?,
+            capabilities_json = ?, next_check_at = ?, consecutive_failures = 0,
+            state = 'active', version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(versionId, encodeJson(prepared.detector), encodeJson(schedule), encodeJson(retry),
+        encodeJson(prepared.capabilities ?? {}), row.paused ? null : nextMonitorCheckAt(schedule, this.clock()),
+        timestamp, monitorId);
+      return this.inspectMonitor(monitorId);
+    });
+  }
+
+  stopMonitor(monitorId, { expectedVersion, actor = "user", reasonCode = "stopped_by_user", detail = "" } = {}) {
+    assert.ok(typeof actor === "string" && actor.length > 0 && actor.length <= 256, "monitor stop actor is invalid");
+    assert.ok(typeof reasonCode === "string" && /^[a-z][a-z0-9._-]{0,127}$/u.test(reasonCode), "monitor stop reason code is invalid");
+    assert.ok(typeof detail === "string" && detail.length <= 2000, "monitor stop detail is invalid");
+    return this.transaction(() => {
+      const row = this.requireMonitorRow(monitorId);
+      if (expectedVersion != null) assert.equal(row.version, expectedVersion, `monitor ${monitorId} version changed`);
+      assert.ok(!new Set(["completed", "failed", "expired", "cancelled"]).has(row.state), `monitor ${monitorId} is already terminal`);
+      assert.ok(!row.lease_owner || row.lease_expires_at <= this.now(), `monitor ${monitorId} is busy`);
+      const timestamp = this.now();
+      this.database.prepare(`
+        UPDATE monitors
+        SET state = 'cancelled', paused = 0, next_check_at = NULL,
+            lease_owner = NULL, lease_expires_at = NULL,
+            terminal_reason_code = ?, terminal_reason_detail = ?, terminal_actor = ?, terminal_at = ?,
+            version = version + 1, updated_at = ?
+        WHERE id = ?
+      `).run(reasonCode, detail, actor, timestamp, timestamp, monitorId);
+      return this.inspectMonitor(monitorId);
+    });
   }
 
   getMonitors(sessionId) {
@@ -437,9 +779,15 @@ export class RelayStore {
     return { ...monitor, versions, checks, observations, triggers };
   }
 
-  ingestEvent(input) {
+  ingestEvent(input, { allowCorrelation = false } = {}) {
     return this.transaction(() => {
-      const existing = this.findDuplicateEvent(input);
+      const correlationKey = allowCorrelation && typeof input.correlation_key === "string" && input.correlation_key.length > 0
+        ? input.correlation_key : null;
+      if (correlationKey != null) assert.ok(correlationKey.length <= 1024, "trusted Event correlation key is too long");
+      const storedInput = correlationKey == null
+        ? Object.fromEntries(Object.entries(input).filter(([key]) => key !== "correlation_key"))
+        : input;
+      const existing = this.findDuplicateEvent(storedInput, correlationKey);
       if (existing) {
         return { event: hydrateEvent(existing), duplicate: true };
       }
@@ -449,16 +797,17 @@ export class RelayStore {
       this.database
         .prepare(`
           INSERT INTO events (
-            id, source, source_event_id, fingerprint, payload_json,
+            id, source, source_event_id, fingerprint, correlation_key, payload_json,
             state, version, received_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, 'received', 0, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, 'received', 0, ?, ?)
         `)
         .run(
           eventId,
           input.source,
           input.source_event_id ?? null,
           input.fingerprint,
-          encodeJson(input),
+          correlationKey,
+          encodeJson(storedInput),
           timestamp,
           timestamp,
         );
@@ -487,11 +836,20 @@ export class RelayStore {
       .prepare("SELECT * FROM routing_attempts WHERE event_id = ? ORDER BY created_at, id")
       .all(eventId)
       .map(hydrateRoutingAttempt);
+    const activations = this.database.prepare(`
+      SELECT DISTINCT a.*
+      FROM activations a, json_each(a.delivery_ids_json) ids
+      JOIN deliveries d ON d.id = ids.value
+      WHERE d.event_id = ?
+      ORDER BY a.created_at, a.id
+    `).all(eventId).map(hydrateActivation);
     return {
       ...event,
       decision: decisionRow ? hydrateDecision(decisionRow) : null,
       deliveries,
       routing_attempts: routingAttempts,
+      activations,
+      notification: this.getNotificationOutcome(eventId),
     };
   }
 
@@ -628,7 +986,7 @@ export class RelayStore {
           deliveryIds.push(deliveryId);
           sessionIds.push(delivery.session_id);
 
-          for (const waitId of delivery.wait_ids) {
+          for (const [ordinal, waitId] of delivery.wait_ids.entries()) {
             const snapshotWait = snapshotSession.waits.find((wait) => wait.wait_id === waitId);
             assert.ok(snapshotWait, `unknown snapshot wait ${waitId}`);
             const waitRow = this.database.prepare("SELECT * FROM waits WHERE id = ?").get(waitId);
@@ -636,8 +994,12 @@ export class RelayStore {
             assert.equal(waitRow.status, "active", `wait ${waitId} is not active`);
             assert.equal(waitRow.version, snapshotWait.version, `wait ${waitId} version changed`);
             this.database
-              .prepare("INSERT INTO delivery_waits (delivery_id, wait_id) VALUES (?, ?)")
-              .run(deliveryId, waitId);
+              .prepare(`
+                INSERT INTO delivery_waits (
+                  delivery_id, wait_id, ordinal, wait_snapshot_json
+                ) VALUES (?, ?, ?, ?)
+              `)
+              .run(deliveryId, waitId, ordinal, encodeJson(snapshotWait));
             this.database
               .prepare(`
                 UPDATE waits
@@ -693,6 +1055,7 @@ export class RelayStore {
       .prepare(`
         SELECT * FROM monitors
         WHERE state IN ('active', 'degraded')
+          AND paused = 0
           AND next_check_at IS NOT NULL
           AND next_check_at <= ?
         ORDER BY next_check_at, id
@@ -702,9 +1065,45 @@ export class RelayStore {
       .map((row) => this.hydrateMonitor(row));
   }
 
+  cleanupRetention({ terminalBefore, limit = 1_000 } = {}) {
+    const before = toIso(terminalBefore);
+    assert.ok(Number.isSafeInteger(limit) && limit >= 1 && limit <= 10_000, "retention cleanup limit must be from 1 to 10000");
+    return this.transaction(() => {
+      const rows = this.database.prepare(`
+        SELECT id FROM events
+        WHERE state = 'resolved' AND updated_at < ?
+          AND json_extract(payload_json, '$.__relay_retention_redacted') IS NOT 1
+        ORDER BY updated_at, id
+        LIMIT ?
+      `).all(before, limit);
+      const timestamp = this.now();
+      for (const row of rows) {
+        this.database.prepare(`
+          UPDATE events
+          SET payload_json = ?, version = version + 1, updated_at = ?
+          WHERE id = ? AND state = 'resolved'
+        `).run(encodeJson({ __relay_retention_redacted: 1, redacted_at: timestamp }), timestamp, row.id);
+        this.database.prepare(`
+          UPDATE routing_attempts SET output_json = NULL, error = NULL
+          WHERE event_id = ?
+        `).run(row.id);
+      }
+      return {
+        terminal_before: before,
+        scanned: rows.length,
+        redacted_events: rows.length,
+        retained_events: this.database.prepare("SELECT COUNT(*) AS count FROM events").get().count,
+        retained_decisions: this.database.prepare("SELECT COUNT(*) AS count FROM routing_decisions").get().count,
+        retained_deliveries: this.database.prepare("SELECT COUNT(*) AS count FROM deliveries").get().count,
+        retained_activations: this.database.prepare("SELECT COUNT(*) AS count FROM activations").get().count,
+      };
+    });
+  }
+
   beginMonitorCheck(monitorId, owner, leaseMs, { force = false } = {}) {
     return this.transaction(() => {
       let row = this.requireMonitorRow(monitorId);
+      if (row.paused) return { status: "paused", monitor: this.hydrateMonitor(row) };
       if (!new Set(["active", "degraded"]).has(row.state)) {
         return { status: "inactive", monitor: this.hydrateMonitor(row) };
       }
@@ -762,6 +1161,49 @@ export class RelayStore {
     assert.ok(proposedEvents.length <= 1, "initial Monitor slice emits at most one Event per check");
 
     return this.transaction(() => {
+      const current = this.requireMonitorRow(snapshot.monitor.monitor_id);
+      const proposal = proposedEvents[0];
+      const correlationKey = typeof proposal?.correlation_key === "string" && proposal.correlation_key.length > 0
+        ? proposal.correlation_key : null;
+      const correlated = correlationKey == null ? null
+        : this.database.prepare("SELECT id FROM events WHERE correlation_key = ?").get(correlationKey);
+      const ownershipChanged = current.lease_owner !== owner
+        || current.version !== snapshot.monitor.version
+        || current.active_version_id !== snapshot.monitor.active_version_id;
+      if (ownershipChanged && correlated) {
+        const check = this.database.prepare("SELECT * FROM monitor_checks WHERE id = ?").get(snapshot.check_id);
+        assert.ok(check, `monitor check ${snapshot.check_id} does not exist`);
+        assert.equal(check.state, "running", `monitor check ${snapshot.check_id} is not running`);
+        const timestamp = this.now();
+        const prior = this.latestObservationRow(current.id);
+        const sequence = (prior?.sequence ?? -1) + 1;
+        this.database.prepare(`
+          INSERT INTO observations (id, check_id, monitor_id, sequence, state_hash, data_json, observed_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `).run(this.idFactory(), snapshot.check_id, current.id, sequence, hashJson(observation), encodeJson(observation), timestamp);
+        if (!this.database.prepare("SELECT event_id FROM monitor_triggers WHERE monitor_id = ? AND trigger_key = ?")
+          .get(current.id, proposal.key)) {
+          this.insertBoundMonitorEvent({ monitorRow: current, checkId: snapshot.check_id, proposal, claimWait: false, timestamp });
+        }
+        const nextState = current.lifecycle === "one_shot" ? "completed" : "triggered";
+        this.database.prepare(`
+          UPDATE monitors
+          SET state = ?, paused = 0, next_check_at = NULL, consecutive_failures = 0,
+              lease_owner = NULL, lease_expires_at = NULL,
+              terminal_reason_code = NULL, terminal_reason_detail = NULL,
+              terminal_actor = NULL, terminal_at = NULL,
+              version = version + 1, updated_at = ?
+          WHERE id = ?
+        `).run(nextState, timestamp, current.id);
+        this.database.prepare("UPDATE monitor_checks SET state = 'succeeded', finished_at = ? WHERE id = ? AND state = 'running'")
+          .run(timestamp, snapshot.check_id);
+        return {
+          status: "converged",
+          monitor: this.inspectMonitor(current.id),
+          eventIds: [correlated.id],
+          sessionIds: [],
+        };
+      }
       const row = this.requireMonitorCommit(snapshot, owner);
       const timestamp = this.now();
       const prior = this.latestObservationRow(row.id);
@@ -947,6 +1389,7 @@ export class RelayStore {
         actors: wait.actors ?? [],
         entities: wait.entities ?? [],
         prior_exchange: wait.prior_exchange,
+        continuation: wait.continuation,
       };
       this.database
         .prepare(`
@@ -997,14 +1440,23 @@ export class RelayStore {
         interval_seconds: monitor.schedule?.interval_seconds ?? 60,
         jitter_seconds: monitor.schedule?.jitter_seconds ?? 0,
       };
-      assert.ok(schedule.interval_seconds > 0, "monitor interval_seconds must be positive");
+      assert.ok(Number.isSafeInteger(schedule.interval_seconds) && schedule.interval_seconds >= 1 && schedule.interval_seconds <= 86_400,
+        "monitor interval_seconds must be a whole number from 1 to 86400");
+      assert.ok(Number.isSafeInteger(schedule.jitter_seconds) && schedule.jitter_seconds >= 0
+        && schedule.jitter_seconds <= Math.min(schedule.interval_seconds, 3_600),
+      "monitor jitter_seconds must be a bounded whole number no greater than interval_seconds");
       const retry = {
         degraded_after: monitor.retry?.degraded_after ?? 1,
         fail_after: monitor.retry?.fail_after ?? 3,
         backoff_seconds: monitor.retry?.backoff_seconds ?? [],
       };
-      assert.ok(retry.degraded_after > 0, "monitor degraded_after must be positive");
-      assert.ok(retry.fail_after >= retry.degraded_after, "monitor fail_after must follow degraded_after");
+      assert.ok(Number.isSafeInteger(retry.degraded_after) && retry.degraded_after >= 1 && retry.degraded_after <= 100,
+        "monitor degraded_after must be a whole number from 1 to 100");
+      assert.ok(Number.isSafeInteger(retry.fail_after) && retry.fail_after >= retry.degraded_after && retry.fail_after <= 100,
+        "monitor fail_after must follow degraded_after and be at most 100");
+      assert.ok(Array.isArray(retry.backoff_seconds) && retry.backoff_seconds.length <= 20
+        && retry.backoff_seconds.every(value => Number.isSafeInteger(value) && value >= 1 && value <= 86_400),
+      "monitor backoff_seconds must contain at most 20 whole-second delays from 1 to 86400");
 
       const versionId = this.idFactory();
       const manifest = {
@@ -1148,17 +1600,31 @@ export class RelayStore {
   }
 
   hydrateDelivery(row, includeEvent = false) {
-    const waitIds = this.database
-      .prepare("SELECT wait_id FROM delivery_waits WHERE delivery_id = ? ORDER BY wait_id")
-      .all(row.id)
-      .map((item) => item.wait_id);
+    const matchedWaitRows = this.database
+      .prepare(`
+        SELECT dw.wait_id, dw.ordinal, dw.wait_snapshot_json, w.*
+        FROM delivery_waits dw
+        JOIN waits w ON w.id = dw.wait_id
+        WHERE dw.delivery_id = ?
+        ORDER BY dw.ordinal, dw.wait_id
+      `)
+      .all(row.id);
+    const waitIds = matchedWaitRows.map((item) => item.wait_id);
+    const matchedWaits = matchedWaitRows.map((item) => item.wait_snapshot_json == null
+      ? hydrateWait(item)
+      : decodeJson(item.wait_snapshot_json));
+    const decision = this.database
+      .prepare("SELECT evidence_json FROM routing_decisions WHERE event_id = ?")
+      .get(row.event_id);
     const delivery = {
       delivery_id: row.id,
       event_id: row.event_id,
       session_id: row.session_id,
       state: row.state,
       wait_ids: waitIds,
+      matched_waits: matchedWaits,
       relation: row.relation,
+      routing_evidence: decision ? decodeJson(decision.evidence_json) : [],
       confidence: row.confidence,
       created_at: row.created_at,
       updated_at: row.updated_at,
@@ -1169,14 +1635,26 @@ export class RelayStore {
     return delivery;
   }
 
-  findDuplicateEvent(input) {
+  findDuplicateEvent(input, correlationKey = null) {
+    // A provider's delivery identity is the stronger invariant. Validate it
+    // before cross-source convergence so a reused delivery id with mutated
+    // content can never be hidden by a matching correlation key.
     if (input.source_event_id != null) {
       const bySourceId = this.database
         .prepare("SELECT * FROM events WHERE source = ? AND source_event_id = ?")
         .get(input.source, input.source_event_id);
       if (bySourceId) {
+        assert.equal(
+          bySourceId.fingerprint,
+          input.fingerprint,
+          `source Event identity ${input.source}/${input.source_event_id} was reused with conflicting content`,
+        );
         return bySourceId;
       }
+    }
+    if (correlationKey != null) {
+      const correlated = this.database.prepare("SELECT * FROM events WHERE correlation_key = ?").get(correlationKey);
+      if (correlated) return correlated;
     }
     return this.database
       .prepare("SELECT * FROM events WHERE source = ? AND fingerprint = ?")
@@ -1223,12 +1701,18 @@ export class RelayStore {
       .prepare("SELECT * FROM monitor_versions WHERE id = ?")
       .get(row.active_version_id);
     const observationRow = this.latestObservationRow(row.id);
+    const checkRow = this.database
+      .prepare("SELECT * FROM monitor_checks WHERE monitor_id = ? ORDER BY started_at DESC, id DESC LIMIT 1")
+      .get(row.id);
+    const triggerRow = this.database
+      .prepare("SELECT * FROM monitor_triggers WHERE monitor_id = ? ORDER BY created_at DESC, id DESC LIMIT 1")
+      .get(row.id);
     const manifest = decodeJson(versionRow?.manifest_json) ?? {};
     return {
       monitor_id: row.id,
       session_id: row.session_id,
       wait_id: row.wait_id,
-      state: row.state,
+      state: row.paused ? "paused" : row.state,
       lifecycle: row.lifecycle,
       fire_on_initial_match: Boolean(row.fire_on_initial_match),
       active_version_id: row.active_version_id,
@@ -1241,10 +1725,18 @@ export class RelayStore {
       capabilities: decodeJson(row.capabilities_json),
       next_check_at: row.next_check_at,
       consecutive_failures: row.consecutive_failures,
+      terminal_reason: row.terminal_reason_code == null ? null : {
+        code: row.terminal_reason_code,
+        detail: row.terminal_reason_detail ?? "",
+        actor: row.terminal_actor,
+        at: row.terminal_at,
+      },
       version: row.version,
       lease_owner: row.lease_owner,
       lease_expires_at: row.lease_expires_at,
+      last_check: checkRow ? hydrateMonitorCheck(checkRow) : null,
       last_observation: observationRow ? hydrateObservation(observationRow) : null,
+      last_trigger: triggerRow ? hydrateMonitorTrigger(triggerRow) : null,
       created_at: row.created_at,
       updated_at: row.updated_at,
     };
@@ -1258,6 +1750,20 @@ export class RelayStore {
       .get(monitorRow.id, proposal.key);
     if (existing) {
       return existing.event_id;
+    }
+
+    const correlationKey = typeof proposal.correlation_key === "string" && proposal.correlation_key.length > 0
+      ? proposal.correlation_key : null;
+    if (correlationKey != null) {
+      assert.ok(correlationKey.length <= 1024, "Monitor correlation key is too long");
+      const correlated = this.database.prepare("SELECT id FROM events WHERE correlation_key = ?").get(correlationKey);
+      if (correlated) {
+        this.database.prepare(`
+          INSERT INTO monitor_triggers (id, monitor_id, check_id, trigger_key, event_id, created_at)
+          VALUES (?, ?, ?, ?, ?, ?)
+        `).run(this.idFactory(), monitorRow.id, checkId, proposal.key, correlated.id, timestamp);
+        return correlated.id;
+      }
     }
 
     const waitRow = this.database.prepare("SELECT * FROM waits WHERE id = ?").get(monitorRow.wait_id);
@@ -1274,6 +1780,7 @@ export class RelayStore {
       source: "relay-monitor",
       source_event_id: sourceEventId,
       fingerprint: hashJson({ monitor_id: monitorRow.id, trigger_key: proposal.key }),
+      ...(correlationKey ? { correlation_key: correlationKey } : {}),
       channel: "monitor",
       type: proposal.type,
       monitor_id: monitorRow.id,
@@ -1283,11 +1790,11 @@ export class RelayStore {
     this.database
       .prepare(`
         INSERT INTO events (
-          id, source, source_event_id, fingerprint, payload_json,
+          id, source, source_event_id, fingerprint, correlation_key, payload_json,
           state, version, received_at, updated_at
-        ) VALUES (?, 'relay-monitor', ?, ?, ?, 'dispatched', 1, ?, ?)
+        ) VALUES (?, 'relay-monitor', ?, ?, ?, ?, 'dispatched', 1, ?, ?)
       `)
-      .run(eventId, sourceEventId, payload.fingerprint, encodeJson(payload), timestamp, timestamp);
+      .run(eventId, sourceEventId, payload.fingerprint, correlationKey, encodeJson(payload), timestamp, timestamp);
 
     const waitIds = claimWait ? [monitorRow.wait_id] : [];
     const relation = claimWait
@@ -1329,8 +1836,12 @@ export class RelayStore {
     });
     if (claimWait) {
       this.database
-        .prepare("INSERT INTO delivery_waits (delivery_id, wait_id) VALUES (?, ?)")
-        .run(deliveryId, monitorRow.wait_id);
+        .prepare(`
+          INSERT INTO delivery_waits (
+            delivery_id, wait_id, ordinal, wait_snapshot_json
+          ) VALUES (?, ?, 0, ?)
+        `)
+        .run(deliveryId, monitorRow.wait_id, encodeJson(hydrateWait(waitRow)));
       this.database
         .prepare(`
           UPDATE waits
@@ -1403,7 +1914,8 @@ function hydrateEvent(row) {
     event_id: row.id,
     source: row.source,
     source_event_id: row.source_event_id,
-    fingerprint: row.fingerprint,
+      fingerprint: row.fingerprint,
+      correlation_key: row.correlation_key,
     payload: decodeJson(row.payload_json),
     state: row.state,
     version: row.version,
@@ -1436,6 +1948,10 @@ function hydrateActivation(row) {
     lease_expires_at: row.lease_expires_at ?? null,
     accepted_at: row.accepted_at ?? null,
     last_error: row.last_error ?? null,
+    attempt_count: row.attempt_count ?? 0,
+    next_attempt_at: row.next_attempt_at ?? null,
+    terminal_reason_code: row.terminal_reason_code ?? null,
+    terminal_at: row.terminal_at ?? null,
     committed_at: row.committed_at,
     created_at: row.created_at,
     updated_at: row.updated_at,
@@ -1504,6 +2020,27 @@ function encodeJson(value) {
 
 function decodeJson(value) {
   return value == null ? null : JSON.parse(value);
+}
+
+function encodeHistoryCursor(row) {
+  return Buffer.from(JSON.stringify({ received_at: row.received_at, id: row.id }), "utf8").toString("base64url");
+}
+
+function decodeHistoryCursor(value) {
+  assert.ok(typeof value === "string" && value.length > 0 && value.length <= 2048, "Event history cursor is invalid");
+  let parsed;
+  try {
+    parsed = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+  } catch {
+    assert.fail("Event history cursor is invalid");
+  }
+  assert.ok(parsed && typeof parsed === "object" && Object.keys(parsed).length === 2,
+    "Event history cursor is invalid");
+  assert.ok(typeof parsed.id === "string" && parsed.id.length > 0 && parsed.id.length <= 512,
+    "Event history cursor is invalid");
+  assert.ok(typeof parsed.received_at === "string" && parsed.received_at.length <= 64
+    && !Number.isNaN(Date.parse(parsed.received_at)), "Event history cursor is invalid");
+  return parsed;
 }
 
 function toIso(value) {

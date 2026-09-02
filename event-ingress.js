@@ -27,6 +27,11 @@ export function createRelayEventHandler({ relayRuntime, token, maxBodyBytes = 1_
       writeJson(response, 403, { error: "forbidden" });
       return;
     }
+    const contentEncoding = String(request.headers?.["content-encoding"] ?? "identity").trim().toLowerCase();
+    if (contentEncoding !== "identity") {
+      writeJson(response, 415, { error: "unsupported_content_encoding" });
+      return;
+    }
 
     try {
       const body = await readJson(request, maxBodyBytes);
@@ -45,15 +50,26 @@ export function createRelayEventHandler({ relayRuntime, token, maxBodyBytes = 1_
         })),
       });
     } catch (error) {
-      const status = error instanceof EventIngressError ? error.statusCode : 500;
-      writeJson(response, status, {
-        error: status === 413
+      const status = error instanceof EventIngressError ? error.statusCode
+        : Number.isInteger(error?.statusCode) ? error.statusCode : 500;
+      const publicCode = status === 413
           ? "payload_too_large"
-          : status < 500 ? "invalid_event" : "event_delivery_failed",
-        message: error?.message ?? String(error),
+          : status === 429 ? "rate_limited"
+          : status === 503 && error?.errorClass === "global_concurrency_limited" ? "temporarily_overloaded"
+          : status < 500 ? "invalid_event" : "event_delivery_failed";
+      writeJson(response, status, {
+        error: publicCode,
+        message: publicErrorMessage(publicCode, error),
       });
     }
   };
+}
+
+function publicErrorMessage(code, error) {
+  if (code === "rate_limited") return "Relay event admission rate limit exceeded";
+  if (code === "temporarily_overloaded") return "Relay event admission is temporarily overloaded";
+  if (code === "event_delivery_failed") return "Relay could not accept the event";
+  return error?.message ?? String(error);
 }
 
 function normalizeEvent(body) {
@@ -90,11 +106,28 @@ async function readJson(request, maxBodyBytes) {
     chunks.push(buffer);
   }
   if (size === 0) throw new EventIngressError(400, "event body is empty");
+  let value;
   try {
-    return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
   } catch {
     throw new EventIngressError(400, "event body is not valid JSON");
   }
+  validateComplexity(value);
+  return value;
+}
+
+function validateComplexity(value) {
+  let keys = 0;
+  const visit = (node, depth) => {
+    if (depth > 32) throw new EventIngressError(413, "event body nesting is too deep");
+    if (!node || typeof node !== "object") return;
+    for (const child of Object.values(node)) {
+      keys += 1;
+      if (keys > 10_000) throw new EventIngressError(413, "event body has too many fields");
+      visit(child, depth + 1);
+    }
+  };
+  visit(value, 0);
 }
 
 function authorized(request, token) {

@@ -17,7 +17,7 @@ test("SPEC and acceptance catalog cover every public Events responsibility", asy
   for (const term of ["Wait", "Event", "Delivery", "Router", "Monitor", "recovery", "Security"]) {
     assert.match(spec, new RegExp(term, "i"));
   }
-  for (let id = 1; id <= 17; id += 1) {
+  for (let id = 1; id <= 31; id += 1) {
     assert.match(acceptance, new RegExp(`EVT-${String(id).padStart(3, "0")}`));
   }
 });
