@@ -76,9 +76,30 @@ interface EventView {
 
 export interface ManagementSnapshot {
   registrations: RegistrationView[]
+  bundle_types: BundleTypeView[]
   events: EventView[]
   connectors: ConnectorView[]
   event_page: { next_cursor: string | null; total: number; limit: number }
+  bundle_page: { next_cursor: string | null; total: number; limit: number }
+}
+
+interface BundleTypeView {
+  type_id: string
+  bundle_version: number
+  origin: { kind: 'plugin' | 'agent'; plugin_id?: string; plugin_version?: string; creator_session?: string; scope?: string }
+  event_types: string[]
+  capabilities: string[]
+  lifecycle: string[]
+  status: string
+  name: string
+  description: string
+  permissions: string
+  remediation: string
+  artifact_hash?: string
+  scope?: string
+  reusable?: boolean
+  expiry?: string
+  validation_state?: string
 }
 
 interface ConnectorView {
@@ -101,7 +122,7 @@ interface ConnectorView {
 }
 
 export interface WaitingEventsInjected {
-  list: (options: { eventCursor: string | null; eventLimit: number }) => Promise<ManagementSnapshot>
+  list: (options: { eventCursor: string | null; eventLimit: number; bundleCursor: string | null; bundleLimit: number }) => Promise<ManagementSnapshot>
   cancel: (sessionId: string) => Promise<void>
   runNow: (monitorId: string) => Promise<void>
   pauseMonitor: (monitorId: string, version?: number) => Promise<void>
@@ -127,6 +148,7 @@ type ViewState =
 const ACTIVE_WAIT = new Set(['active', 'claimed'])
 const RUNNABLE_MONITOR = new Set(['active', 'degraded'])
 const EVENT_PAGE_SIZE = 20
+const BUNDLE_PAGE_SIZE = 20
 const BACKGROUND_REFRESH_MS = 5_000
 
 export function WaitingEventsSection(props: WaitingEventsSectionProps): ReactNode {
@@ -143,6 +165,7 @@ export function WaitingEventsSection(props: WaitingEventsSectionProps): ReactNod
   const [state, setState] = useState<ViewState>({ status: 'loading' })
   const [refreshing, setRefreshing] = useState(false)
   const [eventCursors, setEventCursors] = useState<Array<string | null>>([null])
+  const [bundleCursors, setBundleCursors] = useState<Array<string | null>>([null])
   const [eventStateFilter, setEventStateFilter] = useState('all')
   const [eventSourceFilter, setEventSourceFilter] = useState('')
   const [pending, setPending] = useState<string | null>(null)
@@ -162,15 +185,16 @@ export function WaitingEventsSection(props: WaitingEventsSectionProps): ReactNod
   }, [])
 
   const eventCursor = eventCursors[eventCursors.length - 1] ?? null
+  const bundleCursor = bundleCursors[bundleCursors.length - 1] ?? null
 
   useEffect(() => {
     let current = true
-    void list({ eventCursor, eventLimit: EVENT_PAGE_SIZE }).then(
+    void list({ eventCursor, eventLimit: EVENT_PAGE_SIZE, bundleCursor, bundleLimit: BUNDLE_PAGE_SIZE }).then(
       snapshot => { if (current) { setState({ status: 'ready', snapshot }); setRefreshing(false) } },
       () => { if (current) { setState({ status: 'error' }); setRefreshing(false) } },
     )
     return () => { current = false }
-  }, [list, request, eventCursor])
+  }, [list, request, eventCursor, bundleCursor, activeLocale])
 
   useEffect(() => {
     const timer = window.setInterval(() => { setRequest(value => value + 1) }, BACKGROUND_REFRESH_MS)
@@ -183,6 +207,10 @@ export function WaitingEventsSection(props: WaitingEventsSectionProps): ReactNod
   )
   const events = useMemo(
     () => state.status === 'ready' ? state.snapshot.events ?? [] : [],
+    [state],
+  )
+  const bundleTypes = useMemo(
+    () => state.status === 'ready' ? state.snapshot.bundle_types ?? [] : [],
     [state],
   )
   const visibleEvents = useMemo(() => events.filter(event =>
@@ -286,8 +314,55 @@ export function WaitingEventsSection(props: WaitingEventsSectionProps): ReactNod
         </div>
       ) : null}
       {state.status === 'ready' && registrations.length === 0
-        && events.length === 0 && connectors.length === 0 ? <p className={css.empty}>{t('empty')}</p>
+        && bundleTypes.length === 0 && events.length === 0 && connectors.length === 0 ? <p className={css.empty}>{t('empty')}</p>
         : null}
+
+      {state.status === 'ready' ? (
+        <section className={css.bundleCatalog} aria-labelledby="relay-bundle-catalog-title" data-relay-bundle-catalog>
+          <div className={css.catalogHeader}>
+            <h3 id="relay-bundle-catalog-title">{t('bundleCatalog')}</h3>
+            <span>{t('bundleTypeCount', { count: state.snapshot.bundle_page.total })}</span>
+          </div>
+          {bundleTypes.length === 0 ? <p className={css.emptyCatalog}>{t('noBundleTypes')}</p> : (
+            <ul className={css.bundleTypes}>
+              {bundleTypes.map((bundle, index) => (
+                <li key={`${bundle.type_id}@${bundle.bundle_version}:${bundle.artifact_hash ?? bundle.origin.plugin_id ?? index}`}
+                  data-relay-bundle-type={bundle.type_id} data-relay-bundle-status={bundle.status}>
+                  <div className={css.bundleHeader}>
+                    <strong>{bundle.name}</strong>
+                    <span className={css.statusBadge}>{statusText(bundle.status, t)}</span>
+                  </div>
+                  <p>{bundle.description}</p>
+                  <dl className={css.details}>
+                    <div><dt>{t('bundleIdentity')}</dt><dd>{bundle.type_id}@{bundle.bundle_version}</dd></div>
+                    <div><dt>{t('bundleOrigin')}</dt><dd>{bundle.origin.kind === 'plugin'
+                      ? t('pluginOrigin', { name: bundle.origin.plugin_id ?? t('unavailable') })
+                      : t('agentOrigin')}</dd></div>
+                    <div><dt>{t('bundleEvents')}</dt><dd>{bundle.event_types.join(', ')}</dd></div>
+                    <div><dt>{t('bundleCapabilities')}</dt><dd>{bundle.capabilities.length > 0 ? bundle.capabilities.join(', ') : t('none')}</dd></div>
+                    <div><dt>{t('bundleLifecycle')}</dt><dd>{bundle.lifecycle.join(', ')}</dd></div>
+                    {bundle.scope ? <div><dt>{t('bundleScope')}</dt><dd>{bundle.scope}</dd></div> : null}
+                    {bundle.artifact_hash ? <div><dt>{t('artifactHash')}</dt><dd title={bundle.artifact_hash}>{shortId(bundle.artifact_hash)}</dd></div> : null}
+                    {bundle.expiry ? <div><dt>{t('bundleExpiry')}</dt><dd>{formatTime(bundle.expiry, activeLocale)}</dd></div> : null}
+                    {bundle.validation_state ? <div><dt>{t('validationState')}</dt><dd>{statusText(bundle.validation_state, t)}</dd></div> : null}
+                  </dl>
+                  <p className={css.bundlePermissions}>{t('bundlePermissions')}: {bundle.permissions}</p>
+                  {bundle.status === 'available' ? null : <p className={css.bundleRemediation}>{t('bundleRemediation')}: {bundle.remediation}</p>}
+                </li>
+              ))}
+            </ul>
+          )}
+          {bundleTypes.length > 0 ? (
+            <nav className={css.pagination} aria-label={t('bundlePagination')}>
+              <Button size="sm" variant="outline" disabled={refreshing || bundleCursors.length === 1}
+                onClick={() => { setRefreshing(true); setBundleCursors(current => current.slice(0, -1)) }}>{t('previousPage')}</Button>
+              <span>{t('pageNumber', { count: bundleCursors.length })}</span>
+              <Button size="sm" variant="outline" disabled={refreshing || state.snapshot.bundle_page.next_cursor === null}
+                onClick={() => { const next = state.snapshot.bundle_page.next_cursor; if (next) { setRefreshing(true); setBundleCursors(current => [...current, next]) } }}>{t('nextPage')}</Button>
+            </nav>
+          ) : null}
+        </section>
+      ) : null}
 
       {connectors.length > 0 ? (
         <section className={css.connectors} aria-labelledby="relay-connectors-title">
@@ -734,6 +809,7 @@ function statusText(
     'active', 'paused', 'claimed', 'degraded', 'triggered', 'failed', 'completed', 'cancelled',
     'consumed', 'superseded', 'expired', 'received', 'routing', 'dispatched', 'resolved', 'queued',
     'running', 'delivered', 'unavailable', 'healthy', 'unconfigured',
+    'available', 'configuration_required', 'incompatible', 'validated', 'installing', 'installed',
   ])
   return known.has(status as RelayManagementLocaleKey)
     ? t(status as RelayManagementLocaleKey)

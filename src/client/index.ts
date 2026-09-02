@@ -20,7 +20,7 @@ interface RemoteResult<T> {
 }
 
 interface RelayManagementRemote {
-  list(options: { eventCursor: string | null; eventLimit: number }): Promise<RemoteResult<ManagementSnapshot>>
+  list(options: { eventCursor: string | null; eventLimit: number; bundleCursor: string | null; bundleLimit: number; locale: 'en-US' | 'zh-CN' }): Promise<RemoteResult<ManagementSnapshot>>
   cancel(sessionId: string): Promise<RemoteResult<unknown>>
   runNow(monitorId: string): Promise<RemoteResult<unknown>>
   pauseMonitor(monitorId: string, expectedVersion?: number): Promise<RemoteResult<unknown>>
@@ -48,7 +48,7 @@ export async function apply(ctx: ClientContext): Promise<() => Promise<void>> {
     throw new Error(result.error?.message ?? 'Relay Events management request failed')
   }
   const injected = (): WaitingEventsInjected => ({
-    list: async options => unwrap(await remote.list(options)),
+    list: async options => unwrap(await remote.list({ ...options, locale: ctx.locale.getSnapshot().active.startsWith('zh') ? 'zh-CN' : 'en-US' })),
     cancel: async (sessionId) => { unwrap(await remote.cancel(sessionId)) },
     runNow: async (monitorId) => { unwrap(await remote.runNow(monitorId)) },
     pauseMonitor: async (monitorId, version) => { unwrap(await remote.pauseMonitor(monitorId, version)) },

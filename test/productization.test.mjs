@@ -465,6 +465,15 @@ test("EP07-005: target update commits a new baseline epoch and failed baseline p
     assert.equal(unchanged.version, updated.version);
     assert.equal(unchanged.versions.length, 2);
     assert.equal(unchanged.last_observation.data.target, "target-b");
+
+    baselineFails = false;
+    const rolledBack = await service.rebaselineMonitor("monitor-rebaseline", {
+      artifact: initial.artifact,
+    }, { expectedVersion: unchanged.version });
+    assert.equal(rolledBack.active_version_id, initial.active_version_id, "rollback must reactivate the retained immutable version");
+    assert.equal(rolledBack.versions.length, 2, "rollback must not duplicate an existing immutable version");
+    assert.equal(rolledBack.observations.length, 3, "rollback must record a fresh baseline check");
+    assert.equal(rolledBack.last_observation.data.target, "target-a");
   } finally { await service.stop(); }
 });
 
