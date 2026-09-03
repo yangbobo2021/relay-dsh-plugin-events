@@ -1,78 +1,154 @@
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
+import { existsSync, renameSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
-import { SCHEMA_SQL, SCHEMA_VERSION } from "./schema.mjs";
+import {
+  SCHEMA_INDEXES_SQL,
+  SCHEMA_SQL,
+  SCHEMA_TABLES_SQL,
+  SCHEMA_VERSION,
+} from "./schema.mjs";
 
 export class RelayStore {
   constructor(path = ":memory:", { clock = () => new Date(), idFactory = randomUUID } = {}) {
     this.clock = clock;
     this.idFactory = idFactory;
+    this.migrationBackupPath = null;
     this.database = new DatabaseSync(path);
-    this.database.exec("PRAGMA foreign_keys = ON");
-    this.database.exec("PRAGMA busy_timeout = 5000");
-    this.database.exec("PRAGMA journal_mode = WAL");
-    this.database.exec(SCHEMA_SQL);
-    const schemaVersion = this.database
-      .prepare("SELECT MAX(version) AS version FROM relay_schema")
-      .get().version;
-    if (schemaVersion == null) {
+    try {
+      this.database.exec("PRAGMA foreign_keys = ON");
+      this.database.exec("PRAGMA busy_timeout = 5000");
+      this.initializeSchema(path);
       this.database
-        .prepare("INSERT INTO relay_schema (version, applied_at) VALUES (?, ?)")
-        .run(SCHEMA_VERSION, this.now());
-    } else {
-      assert.ok(schemaVersion <= SCHEMA_VERSION, `unsupported schema version ${schemaVersion}`);
-      if (schemaVersion < SCHEMA_VERSION) {
-        this.migrateSchema(schemaVersion);
+        .prepare("INSERT OR IGNORE INTO runtime_counters (name, value) VALUES ('routing_epoch', 0)")
+        .run();
+    } catch (error) {
+      this.database.close();
+      const backup = this.migrationBackupPath ? ` Backup: ${this.migrationBackupPath}.` : "";
+      throw new Error(`Relay database initialization failed: ${error.message}.${backup}`, { cause: error });
+    }
+  }
+
+  initializeSchema(path) {
+    const tables = this.database
+      .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .all()
+      .map(row => row.name);
+    if (tables.length === 0 || (tables.length === 1 && tables[0] === "relay_schema"
+      && this.database.prepare("SELECT COUNT(*) AS count FROM relay_schema").get().count === 0)) {
+      this.database.exec("PRAGMA journal_mode = WAL");
+      this.transaction(() => {
+        this.database.exec(SCHEMA_SQL);
         this.database
           .prepare("INSERT INTO relay_schema (version, applied_at) VALUES (?, ?)")
           .run(SCHEMA_VERSION, this.now());
-      }
+        this.assertCurrentSchema();
+      });
+      return;
     }
-    this.database
-      .prepare("INSERT OR IGNORE INTO runtime_counters (name, value) VALUES ('routing_epoch', 0)")
-      .run();
+
+    assert.ok(
+      tables.includes("relay_schema"),
+      "non-empty Relay database has no relay_schema metadata; refusing an unsafe implicit migration",
+    );
+    const schemaVersion = this.database
+      .prepare("SELECT MAX(version) AS version FROM relay_schema")
+      .get().version;
+    assert.ok(
+      Number.isSafeInteger(schemaVersion) && schemaVersion > 0,
+      "non-empty Relay database has no valid schema version",
+    );
+    assert.ok(
+      schemaVersion <= SCHEMA_VERSION,
+      `database schema version ${schemaVersion} is newer than supported version ${SCHEMA_VERSION}`,
+    );
+    // Do not persist even a journal-mode change until the database has been
+    // identified as a supported Relay schema.
+    this.database.exec("PRAGMA journal_mode = WAL");
+    this.assertDatabaseIntegrity("before schema initialization");
+    if (schemaVersion < SCHEMA_VERSION) {
+      this.migrationBackupPath = this.createMigrationBackup(path, schemaVersion);
+    }
+
+    this.transaction(() => {
+      // Missing tables from older releases are safe to create before migration.
+      // Indexes are deliberately deferred until every referenced column exists.
+      this.database.exec(SCHEMA_TABLES_SQL);
+      if (schemaVersion < SCHEMA_VERSION) this.migrateSchema(schemaVersion);
+      this.assertRequiredTablesAndColumns();
+      this.database.exec(SCHEMA_INDEXES_SQL);
+      this.assertCurrentSchema();
+    });
+  }
+
+  createMigrationBackup(path, fromVersion) {
+    if (path === ":memory:" || typeof path !== "string") return null;
+    const backupPath = `${path}.backup-v${fromVersion}-to-v${SCHEMA_VERSION}.sqlite`;
+    if (existsSync(backupPath)) {
+      assertDatabaseFileIsHealthy(backupPath, "existing migration backup");
+      return backupPath;
+    }
+    const temporaryPath = `${backupPath}.tmp-${process.pid}-${randomUUID()}`;
+    try {
+      this.database.exec(`VACUUM INTO ${sqlString(temporaryPath)}`);
+      assertDatabaseFileIsHealthy(temporaryPath, "new migration backup");
+      renameSync(temporaryPath, backupPath);
+      return backupPath;
+    } catch (error) {
+      if (existsSync(temporaryPath)) rmSync(temporaryPath);
+      throw new Error(`could not create verified migration backup ${backupPath}: ${error.message}`, { cause: error });
+    }
   }
 
   migrateSchema(fromVersion) {
-    if (fromVersion < 3) {
+    for (let targetVersion = fromVersion + 1; targetVersion <= SCHEMA_VERSION; targetVersion += 1) {
+      this.applyMigration(targetVersion);
+      this.database
+        .prepare("INSERT INTO relay_schema (version, applied_at) VALUES (?, ?)")
+        .run(targetVersion, this.now());
+    }
+  }
+
+  applyMigration(targetVersion) {
+    if (targetVersion === 2) return;
+    if (targetVersion === 3) {
       const runColumns = this.database.prepare("PRAGMA table_info(runs)").all();
       if (!runColumns.some((column) => column.name === "activation_id")) {
-        this.transaction(() => {
-          this.database.exec("ALTER TABLE runs ADD COLUMN activation_id TEXT");
-          const runs = this.database.prepare("SELECT * FROM runs ORDER BY started_at, id").all();
-          for (const run of runs) {
-            const activationId = `legacy-${run.id}`;
-            const state = run.state === "running" ? "active" : "committed";
-            const timestamp = run.finished_at ?? run.started_at;
-            this.database
-              .prepare(`
-                INSERT INTO activations (
-                  id, session_id, trigger_type, state, delivery_ids_json,
-                  provisional_outcome_json, provisional_at, committed_at,
-                  created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-              `)
-              .run(
-                activationId,
-                run.session_id,
-                run.trigger_type,
-                state,
-                run.delivery_ids_json,
-                run.outcome_json,
-                run.outcome_json == null ? null : timestamp,
-                state === "committed" ? timestamp : null,
-                run.started_at,
-                timestamp,
-              );
-            this.database
-              .prepare("UPDATE runs SET activation_id = ? WHERE id = ?")
-              .run(activationId, run.id);
-          }
-        });
+        this.database.exec("ALTER TABLE runs ADD COLUMN activation_id TEXT");
+        const runs = this.database.prepare("SELECT * FROM runs ORDER BY started_at, id").all();
+        for (const run of runs) {
+          const activationId = `legacy-${run.id}`;
+          const state = run.state === "running" ? "active" : "committed";
+          const timestamp = run.finished_at ?? run.started_at;
+          this.database
+            .prepare(`
+              INSERT INTO activations (
+                id, session_id, trigger_type, state, delivery_ids_json,
+                provisional_outcome_json, provisional_at, committed_at,
+                created_at, updated_at
+              ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `)
+            .run(
+              activationId,
+              run.session_id,
+              run.trigger_type,
+              state,
+              run.delivery_ids_json,
+              run.outcome_json,
+              run.outcome_json == null ? null : timestamp,
+              state === "committed" ? timestamp : null,
+              run.started_at,
+              timestamp,
+            );
+          this.database
+            .prepare("UPDATE runs SET activation_id = ? WHERE id = ?")
+            .run(activationId, run.id);
+        }
       }
+      return;
     }
-    if (fromVersion < 4) {
+    if (targetVersion === 4) {
       const columns = this.database.prepare("PRAGMA table_info(activations)").all();
       const names = new Set(columns.map((column) => column.name));
       for (const [name, type] of [
@@ -85,7 +161,10 @@ export class RelayStore {
           this.database.exec(`ALTER TABLE activations ADD COLUMN ${name} ${type}`);
         }
       }
-      this.transaction(() => {
+      const routingSql = this.database
+        .prepare("SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'routing_decisions'")
+        .get()?.sql ?? "";
+      if (/\bspawn\b/u.test(routingSql)) {
         this.database.exec(`
           ALTER TABLE routing_decisions RENAME TO routing_decisions_v3;
           CREATE TABLE routing_decisions (
@@ -108,9 +187,10 @@ export class RelayStore {
           FROM routing_decisions_v3;
           DROP TABLE routing_decisions_v3;
         `);
-      });
+      }
+      return;
     }
-    if (fromVersion < 5) {
+    if (targetVersion === 5) {
       const columns = this.database.prepare("PRAGMA table_info(delivery_waits)").all();
       const names = new Set(columns.map((column) => column.name));
       if (!names.has("ordinal")) {
@@ -119,8 +199,9 @@ export class RelayStore {
       if (!names.has("wait_snapshot_json")) {
         this.database.exec("ALTER TABLE delivery_waits ADD COLUMN wait_snapshot_json TEXT");
       }
+      return;
     }
-    if (fromVersion < 6) {
+    if (targetVersion === 6) {
       const columns = this.database.prepare("PRAGMA table_info(monitors)").all();
       const names = new Set(columns.map((column) => column.name));
       for (const [name, type] of [
@@ -132,8 +213,9 @@ export class RelayStore {
       ]) {
         if (!names.has(name)) this.database.exec(`ALTER TABLE monitors ADD COLUMN ${name} ${type}`);
       }
+      return;
     }
-    if (fromVersion < 7) {
+    if (targetVersion === 7) {
       this.database.exec(`
         CREATE TABLE IF NOT EXISTS notification_outcomes (
           event_id TEXT PRIMARY KEY REFERENCES events(id),
@@ -144,15 +226,16 @@ export class RelayStore {
           updated_at TEXT NOT NULL
         ) STRICT;
       `);
+      return;
     }
-    if (fromVersion < 8) {
+    if (targetVersion === 8) {
       const columns = this.database.prepare("PRAGMA table_info(events)").all();
       if (!columns.some(column => column.name === "correlation_key")) {
         this.database.exec("ALTER TABLE events ADD COLUMN correlation_key TEXT");
       }
-      this.database.exec("CREATE UNIQUE INDEX IF NOT EXISTS events_trusted_correlation ON events(correlation_key) WHERE correlation_key IS NOT NULL");
+      return;
     }
-    if (fromVersion < 9) {
+    if (targetVersion === 9) {
       const columns = new Set(this.database.prepare("PRAGMA table_info(activations)").all().map(column => column.name));
       for (const [name, type] of [
         ["attempt_count", "INTEGER NOT NULL DEFAULT 0"],
@@ -162,12 +245,54 @@ export class RelayStore {
       ]) {
         if (!columns.has(name)) this.database.exec(`ALTER TABLE activations ADD COLUMN ${name} ${type}`);
       }
+      return;
     }
-    if (fromVersion < 10) {
+    if (targetVersion === 10) {
       const columns = new Set(this.database.prepare("PRAGMA table_info(notification_outcomes)").all().map(column => column.name));
       if (!columns.has("receipt_id")) this.database.exec("ALTER TABLE notification_outcomes ADD COLUMN receipt_id TEXT");
       if (!columns.has("attempt_count")) this.database.exec("ALTER TABLE notification_outcomes ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0");
+      return;
     }
+    throw new Error(`no Relay database migration is defined for schema version ${targetVersion}`);
+  }
+
+  assertRequiredTablesAndColumns() {
+    const expected = expectedSchemaShape();
+    for (const [table, expectedColumns] of expected.tables) {
+      const actualColumns = new Set(
+        this.database.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all().map(column => column.name),
+      );
+      assert.ok(actualColumns.size > 0, `required table ${table} is missing`);
+      for (const column of expectedColumns) {
+        assert.ok(actualColumns.has(column), `required column ${table}.${column} is missing`);
+      }
+    }
+  }
+
+  assertCurrentSchema() {
+    this.assertRequiredTablesAndColumns();
+    const expected = expectedSchemaShape();
+    const actualIndexes = new Map(
+      this.database
+        .prepare("SELECT name, sql FROM sqlite_schema WHERE type = 'index' AND sql IS NOT NULL")
+        .all()
+        .map(row => [row.name, normalizeSql(row.sql)]),
+    );
+    for (const [name, sql] of expected.indexes) {
+      assert.equal(actualIndexes.get(name), sql, `required index ${name} does not match the current schema`);
+    }
+    this.assertDatabaseIntegrity("after schema initialization");
+    const foreignKeyFailures = this.database.prepare("PRAGMA foreign_key_check").all();
+    assert.deepEqual(foreignKeyFailures, [], "Relay database contains foreign-key violations");
+  }
+
+  assertDatabaseIntegrity(stage) {
+    const results = this.database.prepare("PRAGMA quick_check").all();
+    assert.deepEqual(
+      results.map(row => row.quick_check),
+      ["ok"],
+      `Relay database failed integrity validation ${stage}`,
+    );
   }
 
   close() {
@@ -1911,6 +2036,56 @@ export class RelayStore {
       .prepare("UPDATE runtime_counters SET value = value + 1 WHERE name = 'routing_epoch'")
       .run();
   }
+}
+
+let cachedExpectedSchemaShape;
+
+function expectedSchemaShape() {
+  if (cachedExpectedSchemaShape) return cachedExpectedSchemaShape;
+  const reference = new DatabaseSync(":memory:");
+  try {
+    reference.exec(SCHEMA_SQL);
+    const tableNames = reference
+      .prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
+      .all()
+      .map(row => row.name);
+    const tables = new Map(tableNames.map(table => [
+      table,
+      reference.prepare(`PRAGMA table_info(${quoteIdentifier(table)})`).all().map(column => column.name),
+    ]));
+    const indexes = new Map(
+      reference
+        .prepare("SELECT name, sql FROM sqlite_schema WHERE type = 'index' AND sql IS NOT NULL ORDER BY name")
+        .all()
+        .map(row => [row.name, normalizeSql(row.sql)]),
+    );
+    cachedExpectedSchemaShape = { tables, indexes };
+    return cachedExpectedSchemaShape;
+  } finally {
+    reference.close();
+  }
+}
+
+function assertDatabaseFileIsHealthy(path, label) {
+  const database = new DatabaseSync(path, { readOnly: true });
+  try {
+    const results = database.prepare("PRAGMA quick_check").all().map(row => row.quick_check);
+    assert.deepEqual(results, ["ok"], `${label} failed SQLite integrity validation: ${path}`);
+  } finally {
+    database.close();
+  }
+}
+
+function normalizeSql(value) {
+  return value.replace(/\s+/gu, " ").trim().replace(/;$/u, "");
+}
+
+function quoteIdentifier(value) {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function sqlString(value) {
+  return `'${value.replaceAll("'", "''")}'`;
 }
 
 function hydrateWaitRegistration(row, waits) {
