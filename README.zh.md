@@ -1,15 +1,11 @@
 # 面向 DeepSeek Harness 的 Relay Events
 
-> **现已支持 DSH `0.1.2-rc.1`，并保留对 `0.1.2-alpha.3` 的兼容。** 插件 `0.2.2` 已在两个版本上完成验证。[从 npm 安装](https://www.npmjs.com/package/relay-dsh-plugin-events) · [兼容性证据](https://github.com/yangbobo2021/Relay/tree/codex/relay-foundation/dsh-lab/dsh-0.1.2-rc.1-20260903)。
+> **现已支持 DSH `0.1.2-rc.1`，并保留对 `0.1.2-alpha.3` 的兼容。** 插件 `0.2.3` 已在两个版本上完成验证，并可安全升级已有 Relay 数据库。[从 npm 安装](https://www.npmjs.com/package/relay-dsh-plugin-events) · [兼容性证据](https://github.com/yangbobo2021/Relay/tree/codex/relay-foundation/dsh-lab/dsh-0.1.2-rc.1-20260903)。
 
-> **发布通道：** `latest` → `0.2.2`；`next` → `0.2.3-rc.1`。
-
-> **升级提示：** 当前已发布的 `0.2.2` 和 `0.2.3-rc.1` 在打开已有 schema v4
-> 数据库时可能失败。下文所述的安全迁移修复已在源码中实现，但尚未发布。在新版本
-> 发布前，不要使用上述版本升级已有 Relay 数据库。
+> **发布通道：** `latest` → `0.2.3`；`next` → `0.2.3-rc.1`。
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add relay-dsh-plugin-events@0.2.2
+npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add relay-dsh-plugin-events@0.2.3
 npx @deepseek-ai/dsh@0.1.2-rc.1 web
 ```
 
@@ -22,7 +18,7 @@ Wait/Event/Delivery 核心。它提供 Agent 工具、通用 JSON 事件入口�
 Session 投递、故障恢复以及 Waiting Events 设置界面，但不增加执行后端。
 
 旧的 `internal` npm 通道继续用于集成测试，不包含此次兼容保证。请使用上方最新版
-DSH 命令中精确的 `0.2.2` 版本，不要替换为 `@internal`。
+DSH 命令中精确的 `0.2.3` 版本，不要替换为 `@internal`。
 
 ```bash
 dsh plugin --profile web add --save-exact relay-dsh-plugin-events@internal
