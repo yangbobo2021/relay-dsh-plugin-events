@@ -17,6 +17,8 @@ test("EPG-008: schema v4 upgrades delivery Wait snapshots through v10 without da
     new RelayStore(databasePath).close();
     const old = new DatabaseSync(databasePath);
     old.exec(`
+      DROP INDEX events_trusted_correlation;
+      ALTER TABLE events DROP COLUMN correlation_key;
       ALTER TABLE delivery_waits DROP COLUMN wait_snapshot_json;
       ALTER TABLE delivery_waits DROP COLUMN ordinal;
       DELETE FROM relay_schema;

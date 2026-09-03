@@ -2,14 +2,19 @@
 
 > **Now supports DSH `0.1.2-rc.1` while retaining `0.1.2-alpha.3` compatibility.** Plugin `0.2.2` is verified on both releases. [Install it from npm](https://www.npmjs.com/package/relay-dsh-plugin-events) · [Compatibility evidence](https://github.com/yangbobo2021/Relay/tree/codex/relay-foundation/dsh-lab/dsh-0.1.2-rc.1-20260903).
 
-> **Release channels:** `latest` → `0.2.2`; `next` → `0.2.1-rc.1`.
+> **Release channels:** `latest` → `0.2.2`; `next` → `0.2.3-rc.1`.
+
+> **Upgrade notice:** the currently published `0.2.2` and `0.2.3-rc.1`
+> packages can fail while opening an existing schema v4 database. The safe
+> migration fix described below is implemented in source but is not published
+> yet. Do not use those packages to upgrade an existing Relay database.
 
 ```bash
 npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add relay-dsh-plugin-events@0.2.2
 npx @deepseek-ai/dsh@0.1.2-rc.1 web
 ```
 
-[![DSH compatibility](https://img.shields.io/badge/DSH-0.1.1--rc.2%20%7C%200.1.2--alpha.2%20%7C%200.1.2--alpha.3-2f7d68)](https://github.com/deepseek-ai/deepseek-harness)
+[![DSH compatibility](https://img.shields.io/badge/DSH-0.1.1--rc.2%20%7C%200.1.2--alpha.2%20%7C%200.1.2--alpha.3%20%7C%200.1.2--rc.1-2f7d68)](https://github.com/deepseek-ai/deepseek-harness)
 
 English | [中文](README.zh.md)
 
@@ -19,7 +24,7 @@ delivery to the owning existing Session, recovery, and a Waiting Events settings
 surface without adding an execution backend.
 
 The older `internal` npm channel remains available for integration testing and
-does not carry this compatibility guarantee. Use the exact `0.2.1`
+does not carry this compatibility guarantee. Use the exact `0.2.2`
 versions in the latest-DSH command above; do not substitute `@internal`.
 
 ```bash
@@ -30,6 +35,18 @@ dsh web
 Semantic routing and Monitor execution are separate plugins. Without a Router,
 Events uses exact event-type matching. Without Monitors, Wait-only registration
 and external ingress remain fully usable.
+
+## Database lifecycle
+
+The Relay database is persistent and is not removed when the plugin is
+uninstalled. On startup, the plugin initializes a missing or empty database at
+the current schema. A recognized older schema is integrity-checked, backed up to
+`<database>.backup-v<old>-to-v<current>.sqlite`, and upgraded in one transaction
+before dependent indexes are created. The backup is verified and reused on a
+retry. Migration failure rolls back all schema changes and reports the backup
+path. An unknown non-empty schema, a corrupt database, foreign-key violations,
+or a schema newer than the plugin supports is rejected rather than guessed or
+silently modified.
 
 See [SPEC.md](SPEC.md) and
 [delivery scenarios](docs/acceptance-scenarios.md).

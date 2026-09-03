@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = 10;
 
-export const SCHEMA_SQL = `
+export const SCHEMA_TABLES_SQL = `
   CREATE TABLE IF NOT EXISTS relay_schema (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL
@@ -46,10 +46,6 @@ export const SCHEMA_SQL = `
     updated_at TEXT NOT NULL
   ) STRICT;
 
-  CREATE UNIQUE INDEX IF NOT EXISTS activations_one_active_per_session
-    ON activations(session_id)
-    WHERE state = 'active';
-
   CREATE TABLE IF NOT EXISTS runs (
     id TEXT PRIMARY KEY,
     session_id TEXT NOT NULL REFERENCES sessions(id),
@@ -78,14 +74,6 @@ export const SCHEMA_SQL = `
     updated_at TEXT NOT NULL
   ) STRICT;
 
-  CREATE UNIQUE INDEX IF NOT EXISTS waits_live_exclusive_owner
-    ON waits(exclusive_owner_key)
-    WHERE exclusive_owner_key IS NOT NULL
-      AND status IN ('active', 'claimed');
-
-  CREATE INDEX IF NOT EXISTS waits_session_status
-    ON waits(session_id, status);
-
   CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
@@ -100,17 +88,6 @@ export const SCHEMA_SQL = `
     received_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
   ) STRICT;
-
-  CREATE UNIQUE INDEX IF NOT EXISTS events_source_identity
-    ON events(source, source_event_id)
-    WHERE source_event_id IS NOT NULL;
-
-  CREATE UNIQUE INDEX IF NOT EXISTS events_source_fingerprint
-    ON events(source, fingerprint);
-
-  CREATE UNIQUE INDEX IF NOT EXISTS events_trusted_correlation
-    ON events(correlation_key)
-    WHERE correlation_key IS NOT NULL;
 
   CREATE TABLE IF NOT EXISTS routing_attempts (
     id TEXT PRIMARY KEY,
@@ -155,12 +132,6 @@ export const SCHEMA_SQL = `
     wait_snapshot_json TEXT,
     PRIMARY KEY (delivery_id, wait_id)
   ) STRICT;
-
-  CREATE INDEX IF NOT EXISTS deliveries_session_state
-    ON deliveries(session_id, state, created_at);
-
-  CREATE INDEX IF NOT EXISTS deliveries_event_state
-    ON deliveries(event_id, state);
 
   CREATE TABLE IF NOT EXISTS monitors (
     id TEXT PRIMARY KEY,
@@ -234,15 +205,6 @@ export const SCHEMA_SQL = `
     UNIQUE(monitor_id, trigger_key)
   ) STRICT;
 
-  CREATE INDEX IF NOT EXISTS monitors_due
-    ON monitors(state, next_check_at);
-
-  CREATE INDEX IF NOT EXISTS monitors_session_state
-    ON monitors(session_id, state);
-
-  CREATE INDEX IF NOT EXISTS monitor_checks_monitor_time
-    ON monitor_checks(monitor_id, started_at);
-
   CREATE TABLE IF NOT EXISTS notification_outcomes (
     event_id TEXT PRIMARY KEY REFERENCES events(id),
     provider TEXT,
@@ -254,3 +216,45 @@ export const SCHEMA_SQL = `
     updated_at TEXT NOT NULL
   ) STRICT;
 `;
+
+export const SCHEMA_INDEXES_SQL = `
+  CREATE UNIQUE INDEX IF NOT EXISTS activations_one_active_per_session
+    ON activations(session_id)
+    WHERE state = 'active';
+
+  CREATE UNIQUE INDEX IF NOT EXISTS waits_live_exclusive_owner
+    ON waits(exclusive_owner_key)
+    WHERE exclusive_owner_key IS NOT NULL
+      AND status IN ('active', 'claimed');
+
+  CREATE INDEX IF NOT EXISTS waits_session_status
+    ON waits(session_id, status);
+
+  CREATE UNIQUE INDEX IF NOT EXISTS events_source_identity
+    ON events(source, source_event_id)
+    WHERE source_event_id IS NOT NULL;
+
+  CREATE UNIQUE INDEX IF NOT EXISTS events_source_fingerprint
+    ON events(source, fingerprint);
+
+  CREATE UNIQUE INDEX IF NOT EXISTS events_trusted_correlation
+    ON events(correlation_key)
+    WHERE correlation_key IS NOT NULL;
+
+  CREATE INDEX IF NOT EXISTS deliveries_session_state
+    ON deliveries(session_id, state, created_at);
+
+  CREATE INDEX IF NOT EXISTS deliveries_event_state
+    ON deliveries(event_id, state);
+
+  CREATE INDEX IF NOT EXISTS monitors_due
+    ON monitors(state, next_check_at);
+
+  CREATE INDEX IF NOT EXISTS monitors_session_state
+    ON monitors(session_id, state);
+
+  CREATE INDEX IF NOT EXISTS monitor_checks_monitor_time
+    ON monitor_checks(monitor_id, started_at);
+`;
+
+export const SCHEMA_SQL = `${SCHEMA_TABLES_SQL}\n${SCHEMA_INDEXES_SQL}`;
