@@ -1,16 +1,11 @@
 # Relay Events for DeepSeek Harness
 
-> **Now supports DSH `0.1.2-rc.1` while retaining `0.1.2-alpha.3` compatibility.** Plugin `0.2.2` is verified on both releases. [Install it from npm](https://www.npmjs.com/package/relay-dsh-plugin-events) · [Compatibility evidence](https://github.com/yangbobo2021/Relay/tree/codex/relay-foundation/dsh-lab/dsh-0.1.2-rc.1-20260903).
+> **Now supports DSH `0.1.2-rc.1` while retaining `0.1.2-alpha.3` compatibility.** Plugin `0.2.3` is verified on both releases and safely upgrades existing Relay databases. [Install it from npm](https://www.npmjs.com/package/relay-dsh-plugin-events) · [Compatibility evidence](https://github.com/yangbobo2021/Relay/tree/codex/relay-foundation/dsh-lab/dsh-0.1.2-rc.1-20260903).
 
-> **Release channels:** `latest` → `0.2.2`; `next` → `0.2.3-rc.1`.
-
-> **Upgrade notice:** the currently published `0.2.2` and `0.2.3-rc.1`
-> packages can fail while opening an existing schema v4 database. The safe
-> migration fix described below is implemented in source but is not published
-> yet. Do not use those packages to upgrade an existing Relay database.
+> **Release channels:** `latest` → `0.2.3`; `next` → `0.2.3-rc.1`.
 
 ```bash
-npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add relay-dsh-plugin-events@0.2.2
+npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add relay-dsh-plugin-events@0.2.3
 npx @deepseek-ai/dsh@0.1.2-rc.1 web
 ```
 
@@ -24,8 +19,8 @@ delivery to the owning existing Session, recovery, and a Waiting Events settings
 surface without adding an execution backend.
 
 The older `internal` npm channel remains available for integration testing and
-does not carry this compatibility guarantee. Use the exact `0.2.2`
-versions in the latest-DSH command above; do not substitute `@internal`.
+does not carry this compatibility guarantee. Use the exact `0.2.3`
+version in the latest-DSH command above; do not substitute `@internal`.
 
 ```bash
 dsh plugin --profile web add --save-exact relay-dsh-plugin-events@internal
