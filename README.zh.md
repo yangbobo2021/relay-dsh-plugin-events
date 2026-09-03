@@ -2,7 +2,7 @@
 
 > **现已支持 DSH `0.1.2-rc.1`，并保留对 `0.1.2-alpha.3` 的兼容。** 插件 `0.2.3` 已在两个版本上完成验证，并可安全升级已有 Relay 数据库。[从 npm 安装](https://www.npmjs.com/package/relay-dsh-plugin-events) · [兼容性证据](https://github.com/yangbobo2021/Relay/tree/codex/relay-foundation/dsh-lab/dsh-0.1.2-rc.1-20260903)。
 
-> **发布通道：** `latest` → `0.2.3`；`next` → `0.2.3-rc.1`。
+> **发布通道：** `latest` → `0.2.3`；`next` → `0.2.3-rc.2`。
 
 ```bash
 npx @deepseek-ai/dsh@0.1.2-rc.1 plugin --profile web add relay-dsh-plugin-events@0.2.3
