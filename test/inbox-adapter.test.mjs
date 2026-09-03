@@ -25,6 +25,26 @@ test('EVT-009/010: durable inbox acknowledgement retries reuse the persisted act
   assert.match(text, /"routing_evidence":\[\]/);
 });
 
+test('EVT-009/010: rc.1 snapshotEvents also prevents duplicate durable delivery', async () => {
+  const events = [];
+  const agent = {
+    session: { snapshotEvents: () => Object.freeze([...events]) },
+    followup(message) {
+      events.push({ type: 'agent/inbox/spliced', data: { inserted: [message] } });
+    },
+  };
+  const adapter = new DshInboxAdapter({
+    resolveAgent: async () => ({ agent }),
+    awaitDurable: async () => {},
+  });
+  const input = { sessionId: 'existing', activationId: 'activation-rc1', deliveries: [{
+    delivery_id: 'd', event_id: 'e', wait_ids: ['w'], event: { body: 'untrusted' },
+  }] };
+  await adapter.deliver(input);
+  await adapter.deliver(input);
+  assert.equal(events.length, 1);
+});
+
 test('unknown Sessions and oversized Event batches fail before inbox admission', async () => {
   const missing = new DshInboxAdapter({ resolveAgent: async () => ({ error: { message: 'missing' } }), awaitDurable: async () => {} });
   await assert.rejects(missing.deliver({ sessionId: 'missing', activationId: 'a', deliveries: [{}] }), /cannot deliver/);

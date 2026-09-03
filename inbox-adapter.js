@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 
 import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
+import { sessionEvents } from "./dsh-compat.mjs";
 
 export class DshInboxAdapter {
   constructor({
@@ -29,7 +30,7 @@ export class DshInboxAdapter {
     // Admission is acknowledged at durable inbox persistence, not after the
     // model has finished a potentially long turn. A retry after failed flush
     // must find the existing message instead of scheduling a second turn.
-    const alreadyQueued = (resolved.agent.session.events ?? []).some(event => {
+    const alreadyQueued = sessionEvents(resolved.agent.session).some(event => {
       const messages = event.type === "agent/inbox/spliced" ? event.data.inserted ?? []
         : event.type === "user/message" ? [event.data] : [];
       return messages.some(message => message.id === activationId
