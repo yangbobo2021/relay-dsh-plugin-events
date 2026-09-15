@@ -8,6 +8,7 @@ import {
   Tooltip,
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import type { PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
+import type { SessionListState } from '@deepseek-ai/dsh-api-session-controller/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import type { RelayManagementLocaleKey } from './locales.ts'
 import css from './WaitingEventsSection.module.css'
@@ -159,7 +160,7 @@ export function WaitingEventsSection(props: WaitingEventsSectionProps): ReactNod
     || retryActivation === undefined || retryNotification === undefined || connectorAction === undefined || openSession === undefined || t === undefined
     || getLocale === undefined || subscribeLocale === undefined) return null
 
-  const sessionTitles = useSessions(state => state.byId)
+  const sessionTitles = useSessions((state: SessionListState) => state.byId)
   const activeLocale = useSyncExternalStore(subscribeLocale, getLocale, getLocale)
   const [request, setRequest] = useState(0)
   const [state, setState] = useState<ViewState>({ status: 'loading' })
