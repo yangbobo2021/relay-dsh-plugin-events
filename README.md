@@ -2,7 +2,7 @@
 
 > **Stable `0.2.4` is verified on official DSH `0.1.5-rc.2` and `0.1.6-alpha.1`.** It uses the explicit official Session-list state contract required by the alpha release while remaining compatible with rc.2; its peer metadata declares both exact releases. [Install it from npm](https://www.npmjs.com/package/relay-dsh-plugin-events) · [Compatibility evidence](https://github.com/yangbobo2021/Relay/tree/codex/relay-foundation/dsh-lab/dsh-0.1.6-alpha.1-20260915).
 
-> **Release channels:** `latest` → `0.2.4`; `next` → `0.2.4-rc.1`.
+> **Release channels:** `latest` → `0.2.4`; `next` → `0.2.5-rc.1`.
 
 ```bash
 npx @deepseek-ai/dsh@0.1.6-alpha.1 plugin --profile web add relay-dsh-plugin-events@next
